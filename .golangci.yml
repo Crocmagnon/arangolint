@@ -1,0 +1,18 @@
+version: "2"
+issues:
+  fix: true
+linters:
+  default: all
+  disable:
+    - depguard
+    - exhaustruct
+formatters:
+  enable:
+    - goimports
+    - gofmt
+    - gofumpt
+    - golines
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Crocmagnon/arangolint
