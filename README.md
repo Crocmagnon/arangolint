@@ -3,7 +3,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/Crocmagnon/arangolint)](https://goreportcard.com/report/github.com/Crocmagnon/arangolint)
 [![Go Coverage](https://github.com/Crocmagnon/arangolint/wiki/coverage.svg)](https://github.com/Crocmagnon/arangolint/wiki/Coverage)
 
-Opinionated linter for ArangoDB go driver
+Opinionated linter for [ArangoDB go driver v2](https://github.com/arangodb/go-driver).
 
 ## Features
 
