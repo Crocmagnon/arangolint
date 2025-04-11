@@ -10,7 +10,7 @@ Opinionated linter for [ArangoDB go driver v2](https://github.com/arangodb/go-dr
 ### Enforce explicit `AllowImplicit` in transactions
 Why? Because it forces you as a developer to evaluate the need of implicit collections in transactions.
 
-Why should you? Because [lazily adding collections](https://docs.arangodb.com/3.11/develop/transactions/locking-and-isolation/#lazily-adding-collections) to transactions can lead to deadlocks, and because the default if this value is not specified is to allow it.
+Why should you? Because [lazily adding collections](https://docs.arangodb.com/3.11/develop/transactions/locking-and-isolation/#lazily-adding-collections) to transactions can lead to deadlocks, and because the default is to allow it.
 
 ```go
 ctx := context.Background()
