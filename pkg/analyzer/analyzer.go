@@ -45,7 +45,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		if isBeginTransaction(call, pass) {
+		if !isBeginTransaction(call, pass) {
 			return
 		}
 
@@ -84,29 +84,24 @@ func run(pass *analysis.Pass) (interface{}, error) {
 func isBeginTransaction(call *ast.CallExpr, pass *analysis.Pass) bool {
 	selExpr, isSelector := call.Fun.(*ast.SelectorExpr)
 	if !isSelector {
-		return true
+		return false
 	}
 
-	x, isIdent := selExpr.X.(*ast.Ident)
-	if !isIdent {
-		return true
-	}
-
-	xType := pass.TypesInfo.TypeOf(x)
+	xType := pass.TypesInfo.TypeOf(selExpr.X)
 	if xType == nil {
-		return true
+		return false
 	}
 
 	const arangoStruct = "github.com/arangodb/go-driver/v2/arangodb.Database"
 
 	if !strings.HasSuffix(xType.String(), arangoStruct) ||
 		selExpr.Sel.Name != "BeginTransaction" {
-		return true
+		return false
 	}
 
 	const expectedArgsCount = 3
 
-	return len(call.Args) != expectedArgsCount
+	return len(call.Args) == expectedArgsCount
 }
 
 func getElts(node ast.Node) ([]ast.Expr, error) {
