@@ -6,7 +6,7 @@ import (
 	"github.com/golangci/plugin-module-register/register"
 	"golang.org/x/tools/go/analysis"
 
-	"github.com/Crocmagnon/arangolint/pkg/analyzer"
+	"go.augendre.info/arangolint/pkg/analyzer"
 )
 
 //nolint:gochecknoinits // That's how this is supposed to be done.

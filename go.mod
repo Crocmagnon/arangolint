@@ -1,4 +1,4 @@
-module github.com/Crocmagnon/arangolint
+module go.augendre.info/arangolint
 
 go 1.23.0
 
