@@ -5,6 +5,8 @@
 
 Opinionated linter for [ArangoDB go driver v2](https://github.com/arangodb/go-driver).
 
+`arangolint` is available in `golangci-lint` since v2.2.0.
+
 ## Features
 
 ### Enforce explicit `AllowImplicit` in transactions
