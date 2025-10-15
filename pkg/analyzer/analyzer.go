@@ -166,7 +166,7 @@ func eltIsAllowImplicit(expr ast.Expr) bool {
 }
 
 // hasAllowImplicitForIdent checks whether the given identifier (variable or pointer to options)
-// has the AllowImplicit option explicitly set before the call position within the nearest enclosing block.
+// has the AllowImplicit option explicitly set before the call position within the nearest or any ancestor block.
 func hasAllowImplicitForIdent(
 	id *ast.Ident,
 	pass *analysis.Pass,
@@ -178,50 +178,40 @@ func hasAllowImplicitForIdent(
 		return false
 	}
 
-	blk := nearestEnclosingBlock(stack)
-	if blk == nil {
+	blocks := ancestorBlocks(stack)
+	if len(blocks) == 0 {
 		return false
 	}
 
-	// scan statements in order until the call position
-	for _, stmt := range blk.List {
-		if stmt == nil {
-			continue
-		}
+	// Walk from the nearest block outward and scan statements before the call position
+	for _, blk := range blocks {
+		for _, stmt := range blk.List {
+			if stmt == nil {
+				continue
+			}
 
-		if stmt.Pos() >= callPos {
-			break
-		}
+			if stmt.Pos() >= callPos {
+				break
+			}
 
-		// explicit assignment like: options.AllowImplicit = ...
-		if hasAllowImplicitAssignForObj(stmt, obj, pass) {
-			return true
-		}
-
-		// initialization via short/regular assignment: options := {AllowImplicit: ...} or options = {AllowImplicit: ...}
-		if as, ok := stmt.(*ast.AssignStmt); ok {
-			if initHasAllowImplicitForObj(as, obj, pass) {
+			if stmtSetsAllowImplicitForObj(stmt, obj, pass) {
 				return true
 			}
-		}
-
-		// initialization via var declaration: var options = {AllowImplicit: ...} or var optns = &{AllowImplicit: ...}
-		if declInitHasAllowImplicitForObj(stmt, obj, pass) {
-			return true
 		}
 	}
 
 	return false
 }
 
-func nearestEnclosingBlock(stack []ast.Node) *ast.BlockStmt {
+func ancestorBlocks(stack []ast.Node) []*ast.BlockStmt {
+	var blks []*ast.BlockStmt
 	for i := len(stack) - 1; i >= 0; i-- {
 		if blk, ok := stack[i].(*ast.BlockStmt); ok {
-			return blk
+			blks = append(blks, blk)
 		}
 	}
 
-	return nil
+	return blks
 }
 
 func hasAllowImplicitAssignForObj(stmt ast.Stmt, obj types.Object, pass *analysis.Pass) bool {
@@ -363,6 +353,24 @@ func valueSpecHasAllowImplicitForObj(
 
 	if cl, isComposite := value.(*ast.CompositeLit); isComposite {
 		return eltsHasAllowImplicit(cl.Elts)
+	}
+
+	return false
+}
+
+func stmtSetsAllowImplicitForObj(stmt ast.Stmt, obj types.Object, pass *analysis.Pass) bool {
+	if hasAllowImplicitAssignForObj(stmt, obj, pass) {
+		return true
+	}
+
+	if as, ok := stmt.(*ast.AssignStmt); ok {
+		if initHasAllowImplicitForObj(as, obj, pass) {
+			return true
+		}
+	}
+
+	if declInitHasAllowImplicitForObj(stmt, obj, pass) {
+		return true
 	}
 
 	return false

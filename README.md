@@ -42,6 +42,6 @@ db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns)
 ```
 
 Notes and limitations:
-* Variable tracking is block-scoped and flow-sensitive within the nearest enclosing block.
+* Variable tracking is block-scoped and flow-sensitive across the nearest and ancestor blocks within the current function.
 * It detects AllowImplicit when set in the composite literal initialization or via an explicit assignment (e.g., options.AllowImplicit = ...).
 * It does not perform inter-procedural analysis or track values across complex control flow at this time.

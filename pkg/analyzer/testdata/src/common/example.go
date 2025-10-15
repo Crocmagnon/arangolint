@@ -73,4 +73,8 @@ func example() {
 	// var declaration with AllowImplicit in init (pointer)
 	var optns3 = &arangodb.BeginTransactionOptions{AllowImplicit: true}
 	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns3)
+
+	if true {
+		db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns3)
+	}
 }
