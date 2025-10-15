@@ -5,6 +5,8 @@ package analyzer
 import (
 	"errors"
 	"go/ast"
+	"go/token"
+	"go/types"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -35,50 +37,76 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return nil, errInvalidAnalysis
 	}
 
-	nodeFilter := []ast.Node{
-		(*ast.CallExpr)(nil),
-	}
+	var stack []ast.Node
 
-	inspctr.Preorder(nodeFilter, func(node ast.Node) {
-		call, isCall := node.(*ast.CallExpr)
-		if !isCall {
-			return
-		}
+	inspctr.Nodes(nil, func(node ast.Node, push bool) (proceed bool) {
+		// pop
+		if !push {
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
 
-		if !isBeginTransaction(call, pass) {
-			return
-		}
-
-		diag := analysis.Diagnostic{
-			Pos:     call.Pos(),
-			Message: missingAllowImplicitOptionMsg,
-		}
-
-		switch typedArg := call.Args[2].(type) {
-		case *ast.Ident:
-			if typedArg.Name == "nil" {
-				pass.Report(diag)
-
-				return
+				return true
 			}
-		case *ast.UnaryExpr:
-			elts, err := getElts(typedArg.X)
-			if err != nil {
-				return
-			}
-
-			if !eltsHasAllowImplicit(elts) {
-				pass.Report(analysis.Diagnostic{
-					Pos:     call.Pos(),
-					Message: missingAllowImplicitOptionMsg,
-				})
-			}
-
-			return
 		}
+
+		// push
+		stack = append(stack, node)
+
+		if call, isCall := node.(*ast.CallExpr); isCall {
+			handleBeginTransactionCall(call, pass, stack)
+		}
+
+		return true
 	})
 
 	return nil, nil //nolint:nilnil
+}
+
+// handleBeginTransactionCall encapsulates the logic for validating BeginTransaction calls
+// to keep the cognitive complexity of run() low.
+func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack []ast.Node) {
+	if !isBeginTransaction(call, pass) {
+		return
+	}
+
+	diag := analysis.Diagnostic{
+		Pos:     call.Pos(),
+		Message: missingAllowImplicitOptionMsg,
+	}
+
+	switch typedArg := call.Args[2].(type) {
+	case *ast.Ident:
+		if typedArg.Name == "nil" {
+			pass.Report(diag)
+
+			return
+		}
+
+		if hasAllowImplicitForIdent(typedArg, pass, stack, call.Pos()) {
+			return
+		}
+
+		pass.Report(diag)
+	case *ast.UnaryExpr:
+		// &literal or &ident
+		elts, err := getElts(typedArg.X)
+		if err == nil {
+			if !eltsHasAllowImplicit(elts) {
+				pass.Report(diag)
+			}
+
+			return
+		}
+
+		// not a literal, try &ident
+		if id, ok := typedArg.X.(*ast.Ident); ok {
+			if hasAllowImplicitForIdent(id, pass, stack, call.Pos()) {
+				return
+			}
+
+			pass.Report(diag)
+		}
+	}
 }
 
 func isBeginTransaction(call *ast.CallExpr, pass *analysis.Pass) bool {
@@ -135,4 +163,129 @@ func eltIsAllowImplicit(expr ast.Expr) bool {
 	default:
 		return false
 	}
+}
+
+// hasAllowImplicitForIdent checks whether the given identifier (variable or pointer to options)
+// has the AllowImplicit option explicitly set before the call position within the nearest enclosing block.
+func hasAllowImplicitForIdent(
+	id *ast.Ident,
+	pass *analysis.Pass,
+	stack []ast.Node,
+	callPos token.Pos,
+) bool {
+	obj := pass.TypesInfo.ObjectOf(id)
+	if obj == nil {
+		return false
+	}
+
+	blk := nearestEnclosingBlock(stack)
+	if blk == nil {
+		return false
+	}
+
+	// scan statements in order until the call position
+	for _, stmt := range blk.List {
+		if stmt == nil {
+			continue
+		}
+
+		if stmt.Pos() >= callPos {
+			break
+		}
+
+		if hasAllowImplicitAssignForObj(stmt, obj, pass) {
+			return true
+		}
+
+		// check initialization of the variable from a composite literal
+		if as, ok := stmt.(*ast.AssignStmt); ok {
+			if initHasAllowImplicitForObj(as, obj, pass) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func nearestEnclosingBlock(stack []ast.Node) *ast.BlockStmt {
+	for i := len(stack) - 1; i >= 0; i-- {
+		if blk, ok := stack[i].(*ast.BlockStmt); ok {
+			return blk
+		}
+	}
+
+	return nil
+}
+
+func hasAllowImplicitAssignForObj(stmt ast.Stmt, obj types.Object, pass *analysis.Pass) bool {
+	as, isAssignStmt := stmt.(*ast.AssignStmt)
+	if !isAssignStmt {
+		return false
+	}
+
+	for _, lhs := range as.Lhs {
+		sel, isSelectorExpr := lhs.(*ast.SelectorExpr)
+		if !isSelectorExpr {
+			continue
+		}
+
+		if sel.Sel == nil || sel.Sel.Name != "AllowImplicit" {
+			continue
+		}
+
+		ident, isIdent := sel.X.(*ast.Ident)
+		if !isIdent {
+			continue
+		}
+
+		if pass.TypesInfo.ObjectOf(ident) == obj {
+			return true
+		}
+	}
+
+	return false
+}
+
+func initHasAllowImplicitForObj(
+	assign *ast.AssignStmt,
+	obj types.Object,
+	pass *analysis.Pass,
+) bool {
+	// find the RHS corresponding to our obj
+	for lhsIndex, lhs := range assign.Lhs {
+		id, ok := lhs.(*ast.Ident)
+		if !ok {
+			continue
+		}
+
+		if pass.TypesInfo.ObjectOf(id) != obj {
+			continue
+		}
+
+		var rhs ast.Expr
+
+		switch {
+		case len(assign.Rhs) == len(assign.Lhs):
+			rhs = assign.Rhs[lhsIndex]
+		case len(assign.Rhs) == 1:
+			rhs = assign.Rhs[0]
+		default:
+			continue
+		}
+
+		// allow either &CompositeLit or CompositeLit
+		if ue, ok := rhs.(*ast.UnaryExpr); ok {
+			elts, err := getElts(ue.X)
+			if err == nil {
+				return eltsHasAllowImplicit(elts)
+			}
+		}
+
+		if cl, ok := rhs.(*ast.CompositeLit); ok {
+			return eltsHasAllowImplicit(cl.Elts)
+		}
+	}
+
+	return false
 }

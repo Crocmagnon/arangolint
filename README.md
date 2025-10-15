@@ -27,6 +27,21 @@ trx, _ = db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &arangodb.B
 trx, _ = db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &arangodb.BeginTransactionOptions{AllowImplicit: true})
 trx, _ = db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &arangodb.BeginTransactionOptions{AllowImplicit: false})
 trx, _ = db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &arangodb.BeginTransactionOptions{AllowImplicit: true, LockTimeout: 0})
+
+// Indirect via variable (no pointer)
+options := arangodb.BeginTransactionOptions{LockTimeout: 0}
+db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options) // want "missing AllowImplicit option"
+options.AllowImplicit = true
+db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options)
+
+// Indirect via pointer variable
+optns := &arangodb.BeginTransactionOptions{LockTimeout: 0}
+db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns) // want "missing AllowImplicit option"
+optns.AllowImplicit = true
+db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns)
 ```
 
-Limitations: this currently only works when transaction options are directly passed to `BeginTransaction`, not when using a variable.
+Notes and limitations:
+* Variable tracking is block-scoped and flow-sensitive within the nearest enclosing block.
+* It detects AllowImplicit when set in the composite literal initialization or via an explicit assignment (e.g., options.AllowImplicit = ...).
+* It does not perform inter-procedural analysis or track values across complex control flow at this time.
