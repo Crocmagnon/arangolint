@@ -193,15 +193,21 @@ func hasAllowImplicitForIdent(
 			break
 		}
 
+		// explicit assignment like: options.AllowImplicit = ...
 		if hasAllowImplicitAssignForObj(stmt, obj, pass) {
 			return true
 		}
 
-		// check initialization of the variable from a composite literal
+		// initialization via short/regular assignment: options := {AllowImplicit: ...} or options = {AllowImplicit: ...}
 		if as, ok := stmt.(*ast.AssignStmt); ok {
 			if initHasAllowImplicitForObj(as, obj, pass) {
 				return true
 			}
+		}
+
+		// initialization via var declaration: var options = {AllowImplicit: ...} or var optns = &{AllowImplicit: ...}
+		if declInitHasAllowImplicitForObj(stmt, obj, pass) {
+			return true
 		}
 	}
 
@@ -285,6 +291,78 @@ func initHasAllowImplicitForObj(
 		if cl, ok := rhs.(*ast.CompositeLit); ok {
 			return eltsHasAllowImplicit(cl.Elts)
 		}
+	}
+
+	return false
+}
+
+func declInitHasAllowImplicitForObj(stmt ast.Stmt, obj types.Object, pass *analysis.Pass) bool {
+	declStmt, isDeclStmt := stmt.(*ast.DeclStmt)
+	if !isDeclStmt {
+		return false
+	}
+
+	genDecl, isGenDecl := declStmt.Decl.(*ast.GenDecl)
+	if !isGenDecl || genDecl.Tok != token.VAR {
+		return false
+	}
+
+	for _, spec := range genDecl.Specs {
+		valueSpec, isValueSpec := spec.(*ast.ValueSpec)
+		if !isValueSpec {
+			continue
+		}
+
+		if valueSpecHasAllowImplicitForObj(valueSpec, obj, pass) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func valueSpecHasAllowImplicitForObj(
+	valueSpec *ast.ValueSpec,
+	obj types.Object,
+	pass *analysis.Pass,
+) bool {
+	// find the index corresponding to our obj
+	targetIndex := -1
+
+	for i, name := range valueSpec.Names {
+		if pass.TypesInfo.ObjectOf(name) == obj {
+			targetIndex = i
+
+			break
+		}
+	}
+
+	if targetIndex == -1 {
+		return false
+	}
+
+	// pick the value expression for this name
+	var value ast.Expr
+
+	switch {
+	case targetIndex < len(valueSpec.Values):
+		value = valueSpec.Values[targetIndex]
+	case len(valueSpec.Values) == 1:
+		value = valueSpec.Values[0]
+	default:
+		return false
+	}
+
+	// allow either &CompositeLit or CompositeLit
+	if ue, isUnary := value.(*ast.UnaryExpr); isUnary {
+		elts, err := getElts(ue.X)
+		if err == nil {
+			return eltsHasAllowImplicit(elts)
+		}
+	}
+
+	if cl, isComposite := value.(*ast.CompositeLit); isComposite {
+		return eltsHasAllowImplicit(cl.Elts)
 	}
 
 	return false

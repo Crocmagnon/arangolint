@@ -53,4 +53,24 @@ func example() {
 	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns) // want "missing AllowImplicit option"
 	optns.AllowImplicit = true
 	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns)
+
+	// var declaration (no pointer)
+	var options2 = arangodb.BeginTransactionOptions{LockTimeout: 0}
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options2) // want "missing AllowImplicit option"
+	options2.AllowImplicit = true
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options2)
+
+	// var declaration (pointer)
+	var optns2 = &arangodb.BeginTransactionOptions{LockTimeout: 0}
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns2) // want "missing AllowImplicit option"
+	optns2.AllowImplicit = true
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns2)
+
+	// var declaration with AllowImplicit in init (no pointer)
+	var options3 = arangodb.BeginTransactionOptions{AllowImplicit: true}
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options3)
+
+	// var declaration with AllowImplicit in init (pointer)
+	var optns3 = &arangodb.BeginTransactionOptions{AllowImplicit: true}
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns3)
 }
