@@ -2,12 +2,18 @@ package common
 
 import (
 	"context"
+
 	"github.com/arangodb/go-driver/v2/arangodb"
 )
 
 type dbclient struct {
 	db arangodb.Database
 }
+
+var (
+	unsafe = &arangodb.BeginTransactionOptions{}
+	safe   = &arangodb.BeginTransactionOptions{AllowImplicit: false}
+)
 
 func example() {
 	ctx := context.Background()
@@ -42,14 +48,47 @@ func example() {
 	trx, _ = db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &arangodb.BeginTransactionOptions{AllowImplicit: true, LockTimeout: 0})
 
 	// indirect no pointer
-	//options := arangodb.BeginTransactionOptions{LockTimeout: 0}
-	//db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options) // w@nt "missing AllowImplicit option"
-	//options.AllowImplicit = true
-	//db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options)
-	//
+	options := arangodb.BeginTransactionOptions{LockTimeout: 0}
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options) // want "missing AllowImplicit option"
+	options.AllowImplicit = true
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options)
+
 	// indirect pointer
-	//optns := &arangodb.BeginTransactionOptions{LockTimeout: 0}
-	//db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns) // w@nt "missing AllowImplicit option"
-	//options.AllowImplicit = true
-	//db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns)
+	optns := &arangodb.BeginTransactionOptions{LockTimeout: 0}
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns) // want "missing AllowImplicit option"
+	optns.AllowImplicit = true
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns)
+
+	// var declaration (no pointer)
+	var options2 = arangodb.BeginTransactionOptions{LockTimeout: 0}
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options2) // want "missing AllowImplicit option"
+	options2.AllowImplicit = true
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options2)
+
+	// var declaration (pointer)
+	var optns2 = &arangodb.BeginTransactionOptions{LockTimeout: 0}
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns2) // want "missing AllowImplicit option"
+	if true {
+		db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns2) // want "missing AllowImplicit option"
+	}
+
+	optns2.AllowImplicit = true
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns2)
+
+	// var declaration with AllowImplicit in init (no pointer)
+	var options3 = arangodb.BeginTransactionOptions{AllowImplicit: true}
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options3)
+
+	// var declaration with AllowImplicit in init (pointer)
+	var optns3 = &arangodb.BeginTransactionOptions{AllowImplicit: true}
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns3)
+
+	if true {
+		db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns3)
+	}
+
+	if true {
+		db.BeginTransaction(ctx, arangodb.TransactionCollections{}, unsafe) // want "missing AllowImplicit option"
+		db.BeginTransaction(ctx, arangodb.TransactionCollections{}, safe)
+	}
 }

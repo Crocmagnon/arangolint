@@ -5,12 +5,16 @@ package analyzer
 import (
 	"errors"
 	"go/ast"
+	"go/token"
+	"go/types"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
 )
+
+const wantOption = "AllowImplicit"
 
 // NewAnalyzer returns an arangolint analyzer.
 func NewAnalyzer() *analysis.Analyzer {
@@ -35,50 +39,107 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return nil, errInvalidAnalysis
 	}
 
-	nodeFilter := []ast.Node{
-		(*ast.CallExpr)(nil),
-	}
+	var stack []ast.Node
 
-	inspctr.Preorder(nodeFilter, func(node ast.Node) {
-		call, isCall := node.(*ast.CallExpr)
-		if !isCall {
-			return
-		}
-
-		if !isBeginTransaction(call, pass) {
-			return
-		}
-
-		diag := analysis.Diagnostic{
-			Pos:     call.Pos(),
-			Message: missingAllowImplicitOptionMsg,
-		}
-
-		switch typedArg := call.Args[2].(type) {
-		case *ast.Ident:
-			if typedArg.Name == "nil" {
-				pass.Report(diag)
-
-				return
-			}
-		case *ast.UnaryExpr:
-			elts, err := getElts(typedArg.X)
-			if err != nil {
-				return
+	inspctr.Nodes(nil, func(node ast.Node, push bool) (proceed bool) {
+		// pop
+		if !push {
+			if len(stack) == 0 {
+				return true
 			}
 
-			if !eltsHasAllowImplicit(elts) {
-				pass.Report(analysis.Diagnostic{
-					Pos:     call.Pos(),
-					Message: missingAllowImplicitOptionMsg,
-				})
-			}
+			stack = stack[:len(stack)-1]
 
-			return
+			return true
 		}
+
+		// push
+		stack = append(stack, node)
+
+		if call, isCall := node.(*ast.CallExpr); isCall {
+			handleBeginTransactionCall(call, pass, stack)
+		}
+
+		return true
 	})
 
 	return nil, nil //nolint:nilnil
+}
+
+// handleBeginTransactionCall encapsulates the logic for validating BeginTransaction calls
+// to keep the cognitive complexity of run() low.
+func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack []ast.Node) {
+	if !isBeginTransaction(call, pass) {
+		return
+	}
+
+	diag := analysis.Diagnostic{
+		Pos:     call.Pos(),
+		Message: missingAllowImplicitOptionMsg,
+	}
+
+	// Normalize the 3rd argument by unwrapping parentheses
+	arg := unwrapParens(call.Args[2])
+
+	switch typedArg := arg.(type) {
+	case *ast.Ident:
+		if typedArg.Name == "nil" {
+			pass.Report(diag)
+
+			return
+		}
+
+		if hasAllowImplicitForIdent(typedArg, pass, stack, call.Pos()) {
+			return
+		}
+
+		pass.Report(diag)
+	case *ast.UnaryExpr:
+		// &literal or &ident
+		elts, err := getElts(typedArg.X)
+		if err == nil {
+			if !eltsHasAllowImplicit(elts) {
+				pass.Report(diag)
+			}
+
+			return
+		}
+
+		// not a literal, try &ident
+		if id, ok := typedArg.X.(*ast.Ident); ok {
+			if hasAllowImplicitForIdent(id, pass, stack, call.Pos()) {
+				return
+			}
+
+			pass.Report(diag)
+		}
+	case *ast.SelectorExpr:
+		// s.opts (or nested) passed as options
+		if hasAllowImplicitForSelector(typedArg, pass, stack, call.Pos()) {
+			return
+		}
+
+		pass.Report(diag)
+	case *ast.CallExpr:
+		// Typed conversion like (*arangodb.BeginTransactionOptions)(nil)
+		if isTypeConversionToTxnOptionsPtrNil(typedArg, pass) {
+			pass.Report(diag)
+
+			return
+		}
+		// For other calls (factory/helpers), we stay conservative to avoid false positives.
+	}
+}
+
+func unwrapParens(arg ast.Expr) ast.Expr {
+	for {
+		switch typedArg := arg.(type) {
+		case *ast.ParenExpr:
+			arg = typedArg.X
+		default:
+			return arg
+		}
+	}
 }
 
 func isBeginTransaction(call *ast.CallExpr, pass *analysis.Pass) bool {
@@ -87,6 +148,27 @@ func isBeginTransaction(call *ast.CallExpr, pass *analysis.Pass) bool {
 		return false
 	}
 
+	if selExpr.Sel == nil || selExpr.Sel.Name != "BeginTransaction" {
+		return false
+	}
+
+	const expectedArgsCount = 3
+	if len(call.Args) != expectedArgsCount {
+		return false
+	}
+
+	// Prefer selection-based detection to support wrappers with embedded arangodb.Database
+	if sel := pass.TypesInfo.Selections[selExpr]; sel != nil {
+		if obj := sel.Obj(); obj != nil {
+			if pkg := obj.Pkg(); pkg != nil &&
+				pkg.Path() == "github.com/arangodb/go-driver/v2/arangodb" &&
+				obj.Name() == "BeginTransaction" {
+				return true
+			}
+		}
+	}
+
+	// Fallback: direct receiver type match or alias that preserves the type name suffix
 	xType := pass.TypesInfo.TypeOf(selExpr.X)
 	if xType == nil {
 		return false
@@ -94,14 +176,7 @@ func isBeginTransaction(call *ast.CallExpr, pass *analysis.Pass) bool {
 
 	const arangoStruct = "github.com/arangodb/go-driver/v2/arangodb.Database"
 
-	if !strings.HasSuffix(xType.String(), arangoStruct) ||
-		selExpr.Sel.Name != "BeginTransaction" {
-		return false
-	}
-
-	const expectedArgsCount = 3
-
-	return len(call.Args) == expectedArgsCount
+	return strings.HasSuffix(xType.String(), arangoStruct)
 }
 
 func getElts(node ast.Node) ([]ast.Expr, error) {
@@ -131,8 +206,428 @@ func eltIsAllowImplicit(expr ast.Expr) bool {
 			return false
 		}
 
-		return ident.Name == "AllowImplicit"
+		return ident.Name == wantOption
 	default:
 		return false
 	}
+}
+
+// hasAllowImplicitForSelector checks if a selector expression (e.g., s.opts)
+// has had its AllowImplicit field set prior to the call position within
+// the nearest or any ancestor block. This is a conservative intra-procedural check.
+func hasAllowImplicitForSelector(
+	sel *ast.SelectorExpr,
+	pass *analysis.Pass,
+	stack []ast.Node,
+	callPos token.Pos,
+) bool {
+	root := rootIdent(sel)
+	if root == nil {
+		return false
+	}
+
+	rootObj := pass.TypesInfo.ObjectOf(root)
+	if rootObj == nil {
+		return false
+	}
+
+	blocks := ancestorBlocks(stack)
+	for _, blk := range blocks {
+		for _, stmt := range blk.List {
+			if stmt == nil {
+				continue
+			}
+
+			if stmt.Pos() >= callPos {
+				break
+			}
+
+			if hasAllowImplicitAssignForRoot(stmt, rootObj, pass) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// hasAllowImplicitAssignForRoot reports true if the statement assigns to
+// *.AllowImplicit where the root identifier object matches rootObj.
+func hasAllowImplicitAssignForRoot(stmt ast.Stmt, rootObj types.Object, pass *analysis.Pass) bool {
+	as, ok := stmt.(*ast.AssignStmt)
+	if !ok {
+		return false
+	}
+
+	for _, lhs := range as.Lhs {
+		sel, ok := lhs.(*ast.SelectorExpr)
+		if !ok {
+			continue
+		}
+
+		if sel.Sel == nil || sel.Sel.Name != wantOption {
+			continue
+		}
+
+		r := rootIdent(sel.X)
+		if r == nil {
+			continue
+		}
+
+		if pass.TypesInfo.ObjectOf(r) == rootObj {
+			return true
+		}
+	}
+
+	return false
+}
+
+// hasAllowImplicitForIdent checks whether the given identifier (variable or pointer to options)
+// has the AllowImplicit option explicitly set before the call position within the nearest or any ancestor block.
+func hasAllowImplicitForIdent(
+	id *ast.Ident,
+	pass *analysis.Pass,
+	stack []ast.Node,
+	callPos token.Pos,
+) bool {
+	obj := pass.TypesInfo.ObjectOf(id)
+	if obj == nil {
+		return false
+	}
+
+	blocks := ancestorBlocks(stack)
+	// Walk from the nearest block outward and scan statements before the call position
+	for _, blk := range blocks {
+		for _, stmt := range blk.List {
+			if stmt == nil {
+				continue
+			}
+
+			if stmt.Pos() >= callPos {
+				break
+			}
+
+			if stmtSetsAllowImplicitForObj(stmt, obj, pass) {
+				return true
+			}
+		}
+	}
+
+	// If not found in local/ancestor blocks, also check for package-level (global)
+	// variable declarations that initialize AllowImplicit.
+	if hasAllowImplicitForPackageVar(pass, obj) {
+		return true
+	}
+
+	return false
+}
+
+func ancestorBlocks(stack []ast.Node) []*ast.BlockStmt {
+	var blks []*ast.BlockStmt
+	for i := len(stack) - 1; i >= 0; i-- {
+		if blk, ok := stack[i].(*ast.BlockStmt); ok {
+			blks = append(blks, blk)
+		}
+	}
+
+	return blks
+}
+
+func hasAllowImplicitAssignForObj(stmt ast.Stmt, obj types.Object, pass *analysis.Pass) bool {
+	as, isAssignStmt := stmt.(*ast.AssignStmt)
+	if !isAssignStmt {
+		return false
+	}
+
+	for _, lhs := range as.Lhs {
+		sel, isSelectorExpr := lhs.(*ast.SelectorExpr)
+		if !isSelectorExpr {
+			continue
+		}
+
+		if sel.Sel == nil || sel.Sel.Name != wantOption {
+			continue
+		}
+
+		ident := rootIdent(sel.X)
+		if ident == nil {
+			continue
+		}
+
+		if pass.TypesInfo.ObjectOf(ident) == obj {
+			return true
+		}
+	}
+
+	return false
+}
+
+func initHasAllowImplicitForObj(
+	assign *ast.AssignStmt,
+	obj types.Object,
+	pass *analysis.Pass,
+) bool {
+	// find the RHS corresponding to our obj
+	for lhsIndex, lhs := range assign.Lhs {
+		id, ok := lhs.(*ast.Ident)
+		if !ok {
+			continue
+		}
+
+		if pass.TypesInfo.ObjectOf(id) != obj {
+			continue
+		}
+
+		var rhs ast.Expr
+
+		switch {
+		case len(assign.Rhs) == len(assign.Lhs):
+			rhs = assign.Rhs[lhsIndex]
+		case len(assign.Rhs) == 1:
+			rhs = assign.Rhs[0]
+		default:
+			continue
+		}
+
+		// allow either &CompositeLit or CompositeLit
+		if ue, ok := rhs.(*ast.UnaryExpr); ok {
+			elts, err := getElts(ue.X)
+			if err == nil {
+				return eltsHasAllowImplicit(elts)
+			}
+		}
+
+		if cl, ok := rhs.(*ast.CompositeLit); ok {
+			return eltsHasAllowImplicit(cl.Elts)
+		}
+	}
+
+	return false
+}
+
+func declInitHasAllowImplicitForObj(stmt ast.Stmt, obj types.Object, pass *analysis.Pass) bool {
+	declStmt, isDeclStmt := stmt.(*ast.DeclStmt)
+	if !isDeclStmt {
+		return false
+	}
+
+	genDecl, isGenDecl := declStmt.Decl.(*ast.GenDecl)
+	if !isGenDecl || genDecl.Tok != token.VAR {
+		return false
+	}
+
+	for _, spec := range genDecl.Specs {
+		valueSpec, isValueSpec := spec.(*ast.ValueSpec)
+		if !isValueSpec {
+			continue
+		}
+
+		if valueSpecHasAllowImplicitForObj(valueSpec, obj, pass) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func valueSpecHasAllowImplicitForObj(
+	valueSpec *ast.ValueSpec,
+	obj types.Object,
+	pass *analysis.Pass,
+) bool {
+	// find the index corresponding to our obj
+	targetIndex := -1
+
+	for i, name := range valueSpec.Names {
+		if pass.TypesInfo.ObjectOf(name) == obj {
+			targetIndex = i
+
+			break
+		}
+	}
+
+	if targetIndex == -1 {
+		return false
+	}
+
+	// pick the value expression for this name
+	var value ast.Expr
+
+	switch {
+	case targetIndex < len(valueSpec.Values):
+		value = valueSpec.Values[targetIndex]
+	case len(valueSpec.Values) == 1:
+		value = valueSpec.Values[0]
+	default:
+		return false
+	}
+
+	// allow either &CompositeLit or CompositeLit
+	if ue, isUnary := value.(*ast.UnaryExpr); isUnary {
+		elts, err := getElts(ue.X)
+		if err == nil {
+			return eltsHasAllowImplicit(elts)
+		}
+	}
+
+	if cl, isComposite := value.(*ast.CompositeLit); isComposite {
+		return eltsHasAllowImplicit(cl.Elts)
+	}
+
+	return false
+}
+
+// function handles multiple statement forms; refactoring would hurt clarity.
+//
+//nolint:gocognit,cyclop,funlen
+func stmtSetsAllowImplicitForObj(stmt ast.Stmt, obj types.Object, pass *analysis.Pass) bool {
+	// Direct assignment like opts.AllowImplicit = true
+	if hasAllowImplicitAssignForObj(stmt, obj, pass) {
+		return true
+	}
+
+	// Variable initialization via assignment (short var or regular assignment)
+	if as, ok := stmt.(*ast.AssignStmt); ok {
+		if initHasAllowImplicitForObj(as, obj, pass) {
+			return true
+		}
+	}
+
+	// Variable declaration with initialization
+	if declInitHasAllowImplicitForObj(stmt, obj, pass) {
+		return true
+	}
+
+	// Control-flow constructs that may contain relevant prior mutations/initializations
+	switch stmtNode := stmt.(type) {
+	case *ast.IfStmt:
+		// Recurse into body statements
+		for _, st := range stmtNode.Body.List {
+			if stmtSetsAllowImplicitForObj(st, obj, pass) {
+				return true
+			}
+		}
+		// Else can be another IfStmt (else-if) or a BlockStmt
+		switch elseNode := stmtNode.Else.(type) {
+		case *ast.BlockStmt:
+			for _, st := range elseNode.List {
+				if stmtSetsAllowImplicitForObj(st, obj, pass) {
+					return true
+				}
+			}
+		case *ast.IfStmt:
+			if stmtSetsAllowImplicitForObj(elseNode, obj, pass) {
+				return true
+			}
+		}
+	case *ast.ForStmt:
+		// e.g., for i := 0; i < n; i++ { opts.AllowImplicit = true }
+		if as, ok := stmtNode.Init.(*ast.AssignStmt); ok {
+			if initHasAllowImplicitForObj(as, obj, pass) {
+				return true
+			}
+		}
+
+		for _, st := range stmtNode.Body.List {
+			if stmtSetsAllowImplicitForObj(st, obj, pass) {
+				return true
+			}
+		}
+	case *ast.SwitchStmt:
+		if as, ok := stmtNode.Init.(*ast.AssignStmt); ok {
+			if initHasAllowImplicitForObj(as, obj, pass) {
+				return true
+			}
+		}
+
+		for _, cc := range stmtNode.Body.List {
+			if clause, ok := cc.(*ast.CaseClause); ok {
+				for _, st := range clause.Body {
+					if stmtSetsAllowImplicitForObj(st, obj, pass) {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+func rootIdent(expr ast.Expr) *ast.Ident {
+	for {
+		switch typedExpr := expr.(type) {
+		case *ast.Ident:
+			return typedExpr
+		case *ast.ParenExpr:
+			expr = typedExpr.X
+		case *ast.StarExpr:
+			expr = typedExpr.X
+		case *ast.SelectorExpr:
+			// walk down the selector chain until we hit the root identifier
+			expr = typedExpr.X
+		default:
+			return nil
+		}
+	}
+}
+
+func isTypeConversionToTxnOptionsPtrNil(call *ast.CallExpr, pass *analysis.Pass) bool {
+	// single arg must be a nil identifier
+	if len(call.Args) != 1 {
+		return false
+	}
+
+	if id, ok := call.Args[0].(*ast.Ident); !ok || id.Name != "nil" {
+		return false
+	}
+	// Check the target type is a pointer type
+	if t := pass.TypesInfo.TypeOf(call.Fun); t != nil {
+		if _, ok := t.(*types.Pointer); ok {
+			return true
+		}
+	}
+	// Fallback to a syntactic check
+	fun := call.Fun
+	for {
+		if p, ok := fun.(*ast.ParenExpr); ok {
+			fun = p.X
+
+			continue
+		}
+
+		break
+	}
+
+	_, ok := fun.(*ast.StarExpr)
+
+	return ok
+}
+
+// hasAllowImplicitForPackageVar scans all files for top-level var declarations
+// of the given object and returns true if its initialization sets AllowImplicit.
+func hasAllowImplicitForPackageVar(pass *analysis.Pass, obj types.Object) bool {
+	// Only variables can be relevant here, but the object identity check below
+	// will safely no-op for others.
+	for _, f := range pass.Files {
+		for _, decl := range f.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.VAR {
+				continue
+			}
+
+			for _, spec := range genDecl.Specs {
+				valueSpec, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+
+				if valueSpecHasAllowImplicitForObj(valueSpec, obj, pass) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }
