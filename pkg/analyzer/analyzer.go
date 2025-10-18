@@ -26,10 +26,7 @@ func NewAnalyzer() *analysis.Analyzer {
 	}
 }
 
-var (
-	errUnknown         = errors.New("unknown node type")
-	errInvalidAnalysis = errors.New("invalid analysis")
-)
+var errInvalidAnalysis = errors.New("invalid analysis")
 
 const msgMissingAllowImplicit = "missing AllowImplicit option"
 
@@ -91,17 +88,16 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 
 		pass.Report(diag)
 	case *ast.UnaryExpr:
-		// &literal or &ident
-		elts, err := getElts(typedArg.X)
-		if err == nil {
-			if !eltsHasAllowImplicit(elts) {
+		// &CompositeLit or &ident
+		if has, ok := compositeAllowsImplicit(typedArg); ok {
+			if !has {
 				pass.Report(diag)
 			}
 
 			return
 		}
 
-		// not a literal, try &ident
+		// not a composite literal, try &ident
 		if id, ok := typedArg.X.(*ast.Ident); ok {
 			if hasAllowImplicitForIdent(id, pass, stack, call.Pos()) {
 				return
@@ -183,39 +179,6 @@ func isBeginTransaction(call *ast.CallExpr, pass *analysis.Pass) bool {
 	}
 
 	return strings.HasSuffix(xType.String(), arangoDatabaseTypeSuffix)
-}
-
-func getElts(node ast.Node) ([]ast.Expr, error) {
-	switch typedNode := node.(type) {
-	case *ast.CompositeLit:
-		return typedNode.Elts, nil
-	default:
-		return nil, errUnknown
-	}
-}
-
-func eltsHasAllowImplicit(elts []ast.Expr) bool {
-	for _, elt := range elts {
-		if eltIsAllowImplicit(elt) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func eltIsAllowImplicit(expr ast.Expr) bool {
-	switch typedNode := expr.(type) {
-	case *ast.KeyValueExpr:
-		ident, ok := typedNode.Key.(*ast.Ident)
-		if !ok {
-			return false
-		}
-
-		return ident.Name == allowImplicitFieldName
-	default:
-		return false
-	}
 }
 
 // hasAllowImplicitForSelector checks if a selector expression (e.g., s.opts)
