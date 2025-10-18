@@ -22,7 +22,15 @@ import (
 	"golang.org/x/tools/go/ast/inspector"
 )
 
-const allowImplicitFieldName = "AllowImplicit"
+const (
+	allowImplicitFieldName   = "AllowImplicit"
+	msgMissingAllowImplicit  = "missing AllowImplicit option"
+	methodBeginTransaction   = "BeginTransaction"
+	expectedBeginTxnArgs     = 3
+	arangoDatabaseTypeSuffix = "github.com/arangodb/go-driver/v2/arangodb.Database"
+)
+
+var errInvalidAnalysis = errors.New("invalid analysis")
 
 // NewAnalyzer returns an arangolint analyzer.
 func NewAnalyzer() *analysis.Analyzer {
@@ -33,16 +41,6 @@ func NewAnalyzer() *analysis.Analyzer {
 		Requires: []*analysis.Analyzer{inspect.Analyzer},
 	}
 }
-
-var errInvalidAnalysis = errors.New("invalid analysis")
-
-const msgMissingAllowImplicit = "missing AllowImplicit option"
-
-const (
-	methodBeginTransaction   = "BeginTransaction"
-	expectedBeginTxnArgs     = 3
-	arangoDatabaseTypeSuffix = "github.com/arangodb/go-driver/v2/arangodb.Database"
-)
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	inspctr, typeValid := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
@@ -86,22 +84,22 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 	// Normalize the 3rd argument by unwrapping parentheses
 	arg := unwrapParens(call.Args[2])
 
-	switch typedArg := arg.(type) {
+	switch optsExpr := arg.(type) {
 	case *ast.Ident:
-		if isNilIdent(typedArg) {
+		if isNilIdent(optsExpr) {
 			pass.Report(diag)
 
 			return
 		}
 
-		if hasAllowImplicitForIdent(typedArg, pass, stack, call.Pos()) {
+		if hasAllowImplicitForIdent(optsExpr, pass, stack, call.Pos()) {
 			return
 		}
 
 		pass.Report(diag)
 	case *ast.UnaryExpr:
 		// &CompositeLit or &ident
-		if has, ok := compositeAllowsImplicit(typedArg); ok {
+		if has, ok := compositeAllowsImplicit(optsExpr); ok {
 			if !has {
 				pass.Report(diag)
 			}
@@ -110,7 +108,7 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 		}
 
 		// not a composite literal, try &ident
-		if id, ok := typedArg.X.(*ast.Ident); ok {
+		if id, ok := optsExpr.X.(*ast.Ident); ok {
 			if hasAllowImplicitForIdent(id, pass, stack, call.Pos()) {
 				return
 			}
@@ -119,14 +117,14 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 		}
 	case *ast.SelectorExpr:
 		// s.opts (or nested) passed as options
-		if hasAllowImplicitForSelector(typedArg, pass, stack, call.Pos()) {
+		if hasAllowImplicitForSelector(optsExpr, pass, stack, call.Pos()) {
 			return
 		}
 
 		pass.Report(diag)
 	case *ast.CallExpr:
 		// Typed conversion like (*arangodb.BeginTransactionOptions)(nil)
-		if isTypeConversionToTxnOptionsPtrNil(typedArg, pass) {
+		if isTypeConversionToTxnOptionsPtrNil(optsExpr, pass) {
 			pass.Report(diag)
 
 			return
@@ -137,9 +135,9 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 
 func unwrapParens(arg ast.Expr) ast.Expr {
 	for {
-		switch typedArg := arg.(type) {
+		switch pe := arg.(type) {
 		case *ast.ParenExpr:
-			arg = typedArg.X
+			arg = pe.X
 		default:
 			return arg
 		}
@@ -227,12 +225,12 @@ func hasAllowImplicitForSelector(
 // setsAllowImplicitForObjectInAssign reports true if the statement assigns to
 // X.AllowImplicit and the root identifier of X matches the provided object.
 func setsAllowImplicitForObjectInAssign(stmt ast.Stmt, obj types.Object, pass *analysis.Pass) bool {
-	as, ok := stmt.(*ast.AssignStmt)
+	assign, ok := stmt.(*ast.AssignStmt)
 	if !ok {
 		return false
 	}
 
-	for _, lhs := range as.Lhs {
+	for _, lhs := range assign.Lhs {
 		sel, ok := lhs.(*ast.SelectorExpr)
 		if !ok {
 			continue
@@ -338,19 +336,19 @@ func initHasAllowImplicitForObj(
 			continue
 		}
 
-		var rhs ast.Expr
+		var rhsValue ast.Expr
 
 		switch {
 		case len(assign.Rhs) == len(assign.Lhs):
-			rhs = assign.Rhs[lhsIndex]
+			rhsValue = assign.Rhs[lhsIndex]
 		case len(assign.Rhs) == 1:
-			rhs = assign.Rhs[0]
+			rhsValue = assign.Rhs[0]
 		default:
 			continue
 		}
 
 		// Check for AllowImplicit in either &CompositeLit or CompositeLit via helper
-		if has, ok := compositeAllowsImplicit(rhs); ok {
+		if has, ok := compositeAllowsImplicit(rhsValue); ok {
 			return has
 		}
 	}
@@ -404,19 +402,19 @@ func valueSpecHasAllowImplicitForObj(
 	}
 
 	// pick the value expression for this name
-	var value ast.Expr
+	var rhsValue ast.Expr
 
 	switch {
 	case targetIndex < len(valueSpec.Values):
-		value = valueSpec.Values[targetIndex]
+		rhsValue = valueSpec.Values[targetIndex]
 	case len(valueSpec.Values) == 1:
-		value = valueSpec.Values[0]
+		rhsValue = valueSpec.Values[0]
 	default:
 		return false
 	}
 
 	// Check for AllowImplicit in either &CompositeLit or CompositeLit via helper
-	if has, ok := compositeAllowsImplicit(value); ok {
+	if has, ok := compositeAllowsImplicit(rhsValue); ok {
 		return has
 	}
 
@@ -430,8 +428,8 @@ func stmtSetsAllowImplicitForObj(stmt ast.Stmt, obj types.Object, pass *analysis
 	}
 
 	// Variable initialization via assignment (short var or regular assignment)
-	if as, ok := stmt.(*ast.AssignStmt); ok {
-		if initHasAllowImplicitForObj(as, obj, pass) {
+	if assign, ok := stmt.(*ast.AssignStmt); ok {
+		if initHasAllowImplicitForObj(assign, obj, pass) {
 			return true
 		}
 	}
@@ -598,8 +596,8 @@ func handleIfAllowImplicit(stmtNode *ast.IfStmt, obj types.Object, pass *analysi
 // handleForAllowImplicit scans a for statement's init and body for relevant initializations/assignments.
 func handleForAllowImplicit(stmtNode *ast.ForStmt, obj types.Object, pass *analysis.Pass) bool {
 	// e.g., for i := 0; i < n; i++ { opts.AllowImplicit = true }
-	if as, ok := stmtNode.Init.(*ast.AssignStmt); ok {
-		if initHasAllowImplicitForObj(as, obj, pass) {
+	if assign, ok := stmtNode.Init.(*ast.AssignStmt); ok {
+		if initHasAllowImplicitForObj(assign, obj, pass) {
 			return true
 		}
 	}
@@ -619,8 +617,8 @@ func handleSwitchAllowImplicit(
 	obj types.Object,
 	pass *analysis.Pass,
 ) bool {
-	if as, ok := stmtNode.Init.(*ast.AssignStmt); ok {
-		if initHasAllowImplicitForObj(as, obj, pass) {
+	if assign, ok := stmtNode.Init.(*ast.AssignStmt); ok {
+		if initHasAllowImplicitForObj(assign, obj, pass) {
 			return true
 		}
 	}
