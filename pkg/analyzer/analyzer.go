@@ -1,5 +1,13 @@
 // Package analyzer contains tools for analyzing arangodb usage.
-// It focuses on github.com/arangodb/go-driver/v2.
+//
+// Scope and limits of the analysis:
+//   - Intra-procedural only: we do not follow calls across function boundaries.
+//   - Flow/block sensitive within the current function: we scan statements that
+//     occur before a call site in the nearest block and its ancestor blocks.
+//   - Conservative by design: when options come from an unknown factory/helper
+//     call, we assume AllowImplicit is set to prevent false positives.
+//
+// The analyzer focuses on github.com/arangodb/go-driver/v2.
 package analyzer
 
 import (
@@ -59,8 +67,12 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	return nil, nil //nolint:nilnil
 }
 
-// handleBeginTransactionCall encapsulates the logic for validating BeginTransaction calls
-// to keep the cognitive complexity of run() low.
+// handleBeginTransactionCall validates BeginTransaction(...) call sites.
+// Analysis is intra-procedural and flow/block-sensitive: it scans statements
+// that appear before the call within the nearest and ancestor blocks.
+// For third-argument values produced by unknown factory/helper calls, the
+// analyzer remains conservative (assumes AllowImplicit) to avoid
+// false positives that could annoy users.
 func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack []ast.Node) {
 	if !isBeginTransaction(call, pass) {
 		return
@@ -146,6 +158,11 @@ func isAllowImplicitSelector(s *ast.SelectorExpr) bool {
 	return s != nil && s.Sel != nil && s.Sel.Name == allowImplicitFieldName
 }
 
+// isBeginTransaction reports whether call is a call to arangodb.Database.BeginTransaction.
+// It prefers selection-based detection via TypesInfo.Selections to support wrappers or
+// types that embed arangodb.Database. If selection info is unavailable, it falls back
+// to checking the receiver type's string suffix for .../arangodb.Database to handle
+// aliases or named types that preserve the type name.
 func isBeginTransaction(call *ast.CallExpr, pass *analysis.Pass) bool {
 	selExpr, isSelector := call.Fun.(*ast.SelectorExpr)
 	if !isSelector {
@@ -268,6 +285,9 @@ func hasAllowImplicitForIdent(
 	return false
 }
 
+// ancestorBlocks returns the list of enclosing blocks for the current node, from
+// nearest to outermost. This supports intra-procedural, flow-sensitive scans of
+// statements that occur before the call site.
 func ancestorBlocks(stack []ast.Node) []*ast.BlockStmt {
 	var blks []*ast.BlockStmt
 	for i := len(stack) - 1; i >= 0; i-- {
@@ -458,6 +478,9 @@ func rootIdent(expr ast.Expr) *ast.Ident {
 	}
 }
 
+// isTypeConversionToTxnOptionsPtrNil reports whether call is a type conversion to a
+// pointer type with a single nil argument, e.g. (*arangodb.BeginTransactionOptions)(nil).
+// This recognizes explicit nil options passed via a cast.
 func isTypeConversionToTxnOptionsPtrNil(call *ast.CallExpr, pass *analysis.Pass) bool {
 	// single arg must be a nil identifier
 	if len(call.Args) != 1 {
