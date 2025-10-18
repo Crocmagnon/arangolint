@@ -440,9 +440,6 @@ func valueSpecHasAllowImplicitForObj(
 	return false
 }
 
-// function handles multiple statement forms; refactoring would hurt clarity.
-//
-//nolint:gocognit,cyclop,funlen
 func stmtSetsAllowImplicitForObj(stmt ast.Stmt, obj types.Object, pass *analysis.Pass) bool {
 	// Direct assignment like opts.AllowImplicit = true
 	if setsAllowImplicitForObjectInAssign(stmt, obj, pass) {
@@ -464,53 +461,16 @@ func stmtSetsAllowImplicitForObj(stmt ast.Stmt, obj types.Object, pass *analysis
 	// Control-flow constructs that may contain relevant prior mutations/initializations
 	switch stmtNode := stmt.(type) {
 	case *ast.IfStmt:
-		// Recurse into body statements
-		for _, st := range stmtNode.Body.List {
-			if stmtSetsAllowImplicitForObj(st, obj, pass) {
-				return true
-			}
-		}
-		// Else can be another IfStmt (else-if) or a BlockStmt
-		switch elseNode := stmtNode.Else.(type) {
-		case *ast.BlockStmt:
-			for _, st := range elseNode.List {
-				if stmtSetsAllowImplicitForObj(st, obj, pass) {
-					return true
-				}
-			}
-		case *ast.IfStmt:
-			if stmtSetsAllowImplicitForObj(elseNode, obj, pass) {
-				return true
-			}
+		if handleIfAllowImplicit(stmtNode, obj, pass) {
+			return true
 		}
 	case *ast.ForStmt:
-		// e.g., for i := 0; i < n; i++ { opts.AllowImplicit = true }
-		if as, ok := stmtNode.Init.(*ast.AssignStmt); ok {
-			if initHasAllowImplicitForObj(as, obj, pass) {
-				return true
-			}
-		}
-
-		for _, st := range stmtNode.Body.List {
-			if stmtSetsAllowImplicitForObj(st, obj, pass) {
-				return true
-			}
+		if handleForAllowImplicit(stmtNode, obj, pass) {
+			return true
 		}
 	case *ast.SwitchStmt:
-		if as, ok := stmtNode.Init.(*ast.AssignStmt); ok {
-			if initHasAllowImplicitForObj(as, obj, pass) {
-				return true
-			}
-		}
-
-		for _, cc := range stmtNode.Body.List {
-			if clause, ok := cc.(*ast.CaseClause); ok {
-				for _, st := range clause.Body {
-					if stmtSetsAllowImplicitForObj(st, obj, pass) {
-						return true
-					}
-				}
-			}
+		if handleSwitchAllowImplicit(stmtNode, obj, pass) {
+			return true
 		}
 	}
 
@@ -620,4 +580,74 @@ func compositeAllowsImplicit(expr ast.Expr) (bool, bool) {
 	}
 
 	return false, false
+}
+
+// handleIfAllowImplicit scans the if statement's body and else branches for assignments or initializations
+// that set AllowImplicit for the given object. Behavior mirrors the inline logic previously in
+// stmtSetsAllowImplicitForObj; extracted for readability only.
+func handleIfAllowImplicit(stmtNode *ast.IfStmt, obj types.Object, pass *analysis.Pass) bool {
+	// Recurse into body statements
+	for _, st := range stmtNode.Body.List {
+		if stmtSetsAllowImplicitForObj(st, obj, pass) {
+			return true
+		}
+	}
+	// Else can be another IfStmt (else-if) or a BlockStmt
+	switch elseNode := stmtNode.Else.(type) {
+	case *ast.BlockStmt:
+		for _, st := range elseNode.List {
+			if stmtSetsAllowImplicitForObj(st, obj, pass) {
+				return true
+			}
+		}
+	case *ast.IfStmt:
+		if stmtSetsAllowImplicitForObj(elseNode, obj, pass) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// handleForAllowImplicit scans a for statement's init and body for relevant initializations/assignments.
+func handleForAllowImplicit(stmtNode *ast.ForStmt, obj types.Object, pass *analysis.Pass) bool {
+	// e.g., for i := 0; i < n; i++ { opts.AllowImplicit = true }
+	if as, ok := stmtNode.Init.(*ast.AssignStmt); ok {
+		if initHasAllowImplicitForObj(as, obj, pass) {
+			return true
+		}
+	}
+
+	for _, st := range stmtNode.Body.List {
+		if stmtSetsAllowImplicitForObj(st, obj, pass) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// handleSwitchAllowImplicit scans a switch statement's init and case bodies.
+func handleSwitchAllowImplicit(
+	stmtNode *ast.SwitchStmt,
+	obj types.Object,
+	pass *analysis.Pass,
+) bool {
+	if as, ok := stmtNode.Init.(*ast.AssignStmt); ok {
+		if initHasAllowImplicitForObj(as, obj, pass) {
+			return true
+		}
+	}
+
+	for _, cc := range stmtNode.Body.List {
+		if clause, ok := cc.(*ast.CaseClause); ok {
+			for _, st := range clause.Body {
+				if stmtSetsAllowImplicitForObj(st, obj, pass) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }
