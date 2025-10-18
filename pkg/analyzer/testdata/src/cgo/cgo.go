@@ -12,8 +12,9 @@ import "C"
 
 import (
 	"context"
-	"github.com/arangodb/go-driver/v2/arangodb"
 	"unsafe"
+
+	"github.com/arangodb/go-driver/v2/arangodb"
 )
 
 func _() {
