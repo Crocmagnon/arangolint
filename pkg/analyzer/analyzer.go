@@ -242,7 +242,7 @@ func hasAllowImplicitForSelector(
 				break
 			}
 
-			if hasAllowImplicitAssignForRoot(stmt, rootObj, pass) {
+			if setsAllowImplicitForObjectInAssign(stmt, rootObj, pass) {
 				return true
 			}
 		}
@@ -251,9 +251,9 @@ func hasAllowImplicitForSelector(
 	return false
 }
 
-// hasAllowImplicitAssignForRoot reports true if the statement assigns to
-// *.AllowImplicit where the root identifier object matches rootObj.
-func hasAllowImplicitAssignForRoot(stmt ast.Stmt, rootObj types.Object, pass *analysis.Pass) bool {
+// setsAllowImplicitForObjectInAssign reports true if the statement assigns to
+// X.AllowImplicit and the root identifier of X matches the provided object.
+func setsAllowImplicitForObjectInAssign(stmt ast.Stmt, obj types.Object, pass *analysis.Pass) bool {
 	as, ok := stmt.(*ast.AssignStmt)
 	if !ok {
 		return false
@@ -274,7 +274,7 @@ func hasAllowImplicitAssignForRoot(stmt ast.Stmt, rootObj types.Object, pass *an
 			continue
 		}
 
-		if pass.TypesInfo.ObjectOf(r) == rootObj {
+		if pass.TypesInfo.ObjectOf(r) == obj {
 			return true
 		}
 	}
@@ -331,35 +331,6 @@ func ancestorBlocks(stack []ast.Node) []*ast.BlockStmt {
 	}
 
 	return blks
-}
-
-func hasAllowImplicitAssignForObj(stmt ast.Stmt, obj types.Object, pass *analysis.Pass) bool {
-	as, isAssignStmt := stmt.(*ast.AssignStmt)
-	if !isAssignStmt {
-		return false
-	}
-
-	for _, lhs := range as.Lhs {
-		sel, isSelectorExpr := lhs.(*ast.SelectorExpr)
-		if !isSelectorExpr {
-			continue
-		}
-
-		if sel.Sel == nil || sel.Sel.Name != wantOption {
-			continue
-		}
-
-		ident := rootIdent(sel.X)
-		if ident == nil {
-			continue
-		}
-
-		if pass.TypesInfo.ObjectOf(ident) == obj {
-			return true
-		}
-	}
-
-	return false
 }
 
 func initHasAllowImplicitForObj(
@@ -468,7 +439,7 @@ func valueSpecHasAllowImplicitForObj(
 //nolint:gocognit,cyclop,funlen
 func stmtSetsAllowImplicitForObj(stmt ast.Stmt, obj types.Object, pass *analysis.Pass) bool {
 	// Direct assignment like opts.AllowImplicit = true
-	if hasAllowImplicitAssignForObj(stmt, obj, pass) {
+	if setsAllowImplicitForObjectInAssign(stmt, obj, pass) {
 		return true
 	}
 
