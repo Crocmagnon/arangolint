@@ -389,16 +389,9 @@ func initHasAllowImplicitForObj(
 			continue
 		}
 
-		// allow either &CompositeLit or CompositeLit
-		if ue, ok := rhs.(*ast.UnaryExpr); ok {
-			elts, err := getElts(ue.X)
-			if err == nil {
-				return eltsHasAllowImplicit(elts)
-			}
-		}
-
-		if cl, ok := rhs.(*ast.CompositeLit); ok {
-			return eltsHasAllowImplicit(cl.Elts)
+		// Check for AllowImplicit in either &CompositeLit or CompositeLit via helper
+		if has, ok := compositeAllowsImplicit(rhs); ok {
+			return has
 		}
 	}
 
@@ -462,16 +455,9 @@ func valueSpecHasAllowImplicitForObj(
 		return false
 	}
 
-	// allow either &CompositeLit or CompositeLit
-	if ue, isUnary := value.(*ast.UnaryExpr); isUnary {
-		elts, err := getElts(ue.X)
-		if err == nil {
-			return eltsHasAllowImplicit(elts)
-		}
-	}
-
-	if cl, isComposite := value.(*ast.CompositeLit); isComposite {
-		return eltsHasAllowImplicit(cl.Elts)
+	// Check for AllowImplicit in either &CompositeLit or CompositeLit via helper
+	if has, ok := compositeAllowsImplicit(value); ok {
+		return has
 	}
 
 	return false
@@ -630,4 +616,31 @@ func hasAllowImplicitForPackageVar(pass *analysis.Pass, obj types.Object) bool {
 	}
 
 	return false
+}
+
+// compositeAllowsImplicit reports whether expr is a composite literal (or address-of one)
+// that contains a KeyValueExpr with key ident named wantOption ("AllowImplicit").
+// It returns (has, ok) where ok indicates the expression was a recognized composite literal shape.
+func compositeAllowsImplicit(expr ast.Expr) (bool, bool) {
+	expr = unwrapParens(expr)
+
+	// handle address-of &CompositeLit
+	if ue, ok := expr.(*ast.UnaryExpr); ok {
+		expr = unwrapParens(ue.X)
+	}
+
+	// handle CompositeLit
+	if cl, ok := expr.(*ast.CompositeLit); ok {
+		for _, elt := range cl.Elts {
+			if kv, ok := elt.(*ast.KeyValueExpr); ok {
+				if ident, ok := kv.Key.(*ast.Ident); ok && ident.Name == wantOption {
+					return true, true
+				}
+			}
+		}
+
+		return false, true
+	}
+
+	return false, false
 }
