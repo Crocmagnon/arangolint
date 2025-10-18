@@ -28,6 +28,7 @@ const (
 	methodBeginTransaction   = "BeginTransaction"
 	expectedBeginTxnArgs     = 3
 	arangoDatabaseTypeSuffix = "github.com/arangodb/go-driver/v2/arangodb.Database"
+	arangoPackageSuffix      = "github.com/arangodb/go-driver/v2/arangodb"
 )
 
 var errInvalidAnalysis = errors.New("invalid analysis")
@@ -176,23 +177,34 @@ func isBeginTransaction(call *ast.CallExpr, pass *analysis.Pass) bool {
 		return false
 	}
 
-	// Prefer selection-based detection to support wrappers with embedded arangodb.Database
-	if sel := pass.TypesInfo.Selections[selExpr]; sel != nil {
-		if obj := sel.Obj(); obj != nil {
-			if pkg := obj.Pkg(); pkg != nil &&
-				pkg.Path() == "github.com/arangodb/go-driver/v2/arangodb" &&
-				obj.Name() == methodBeginTransaction {
-				return true
-			}
-		}
-	}
-
-	// Fallback: direct receiver type match or alias that preserves the type name suffix
 	xType := pass.TypesInfo.TypeOf(selExpr.X)
 	if xType == nil {
 		return false
 	}
 
+	// Try to find the arangodb package in the current package imports and get the Database type.
+	var dbType types.Type
+
+	for _, imp := range pass.Pkg.Imports() {
+		if strings.HasSuffix(imp.Path(), arangoPackageSuffix) {
+			if obj := imp.Scope().Lookup("Database"); obj != nil {
+				if tn, ok := obj.(*types.TypeName); ok {
+					dbType = tn.Type()
+				}
+			}
+
+			break
+		}
+	}
+
+	if dbType != nil {
+		// If the receiver's type is assignable to arangodb.Database, it's a valid BeginTransaction call.
+		if types.AssignableTo(xType, dbType) {
+			return true
+		}
+	}
+
+	// Last resort: direct receiver type match or alias that preserves the type name suffix
 	return strings.HasSuffix(xType.String(), arangoDatabaseTypeSuffix)
 }
 
