@@ -27,6 +27,8 @@ func highestPriorityCases() {
 	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, s.opts) // want "missing AllowImplicit option"
 	s.opts.AllowImplicit = true
 	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, s.opts) // ok
+	s.opts = &arangodb.BeginTransactionOptions{AllowImplicit: false}
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, s.opts) // ok
 
 	// Nested selector
 	n := &nested{}
