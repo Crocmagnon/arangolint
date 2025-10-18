@@ -39,26 +39,16 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return nil, errInvalidAnalysis
 	}
 
-	var stack []ast.Node
-
-	inspctr.Nodes(nil, func(node ast.Node, push bool) (proceed bool) {
-		// pop
+	// Visit only call expressions and get the traversal stack from the inspector.
+	nodeFilter := []ast.Node{(*ast.CallExpr)(nil)}
+	inspctr.WithStack(nodeFilter, func(node ast.Node, push bool, stack []ast.Node) (proceed bool) {
 		if !push {
-			if len(stack) == 0 {
-				return true
-			}
-
-			stack = stack[:len(stack)-1]
-
 			return true
 		}
 
-		// push
-		stack = append(stack, node)
-
-		if call, isCall := node.(*ast.CallExpr); isCall {
-			handleBeginTransactionCall(call, pass, stack)
-		}
+		// node is guaranteed to be *ast.CallExpr due to the filter above.
+		call := node.(*ast.CallExpr) //nolint:forcetypeassert
+		handleBeginTransactionCall(call, pass, stack)
 
 		return true
 	})
