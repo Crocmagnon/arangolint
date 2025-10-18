@@ -232,23 +232,10 @@ func hasAllowImplicitForSelector(
 	}
 
 	blocks := ancestorBlocks(stack)
-	for _, blk := range blocks {
-		for _, stmt := range blk.List {
-			if stmt == nil {
-				continue
-			}
 
-			if stmt.Pos() >= callPos {
-				break
-			}
-
-			if setsAllowImplicitForObjectInAssign(stmt, rootObj, pass) {
-				return true
-			}
-		}
-	}
-
-	return false
+	return scanPriorStatements(blocks, callPos, func(stmt ast.Stmt) bool {
+		return setsAllowImplicitForObjectInAssign(stmt, rootObj, pass)
+	})
 }
 
 // setsAllowImplicitForObjectInAssign reports true if the statement assigns to
@@ -297,20 +284,10 @@ func hasAllowImplicitForIdent(
 
 	blocks := ancestorBlocks(stack)
 	// Walk from the nearest block outward and scan statements before the call position
-	for _, blk := range blocks {
-		for _, stmt := range blk.List {
-			if stmt == nil {
-				continue
-			}
-
-			if stmt.Pos() >= callPos {
-				break
-			}
-
-			if stmtSetsAllowImplicitForObj(stmt, obj, pass) {
-				return true
-			}
-		}
+	if scanPriorStatements(blocks, callPos, func(stmt ast.Stmt) bool {
+		return stmtSetsAllowImplicitForObj(stmt, obj, pass)
+	}) {
+		return true
 	}
 
 	// If not found in local/ancestor blocks, also check for package-level (global)
@@ -331,6 +308,29 @@ func ancestorBlocks(stack []ast.Node) []*ast.BlockStmt {
 	}
 
 	return blks
+}
+
+// scanPriorStatements iterates statements in the provided blocks in lexical order,
+// visiting only statements that appear before the provided 'until' position. It stops
+// early and returns true when visit returns true.
+func scanPriorStatements(blocks []*ast.BlockStmt, until token.Pos, visit func(ast.Stmt) bool) bool {
+	for _, blk := range blocks {
+		for _, stmt := range blk.List {
+			if stmt == nil {
+				continue
+			}
+
+			if stmt.Pos() >= until {
+				break
+			}
+
+			if visit(stmt) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func initHasAllowImplicitForObj(
