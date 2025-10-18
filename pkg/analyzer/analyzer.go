@@ -42,11 +42,13 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	inspctr.Nodes(nil, func(node ast.Node, push bool) (proceed bool) {
 		// pop
 		if !push {
-			if len(stack) > 0 {
-				stack = stack[:len(stack)-1]
-
+			if len(stack) == 0 {
 				return true
 			}
+
+			stack = stack[:len(stack)-1]
+
+			return true
 		}
 
 		// push
@@ -230,12 +232,12 @@ func hasAllowImplicitAssignForObj(stmt ast.Stmt, obj types.Object, pass *analysi
 			continue
 		}
 
-		ident, isIdent := sel.X.(*ast.Ident)
-		if !isIdent {
+		rootIdent := rootIdent(sel.X)
+		if rootIdent == nil {
 			continue
 		}
 
-		if pass.TypesInfo.ObjectOf(ident) == obj {
+		if pass.TypesInfo.ObjectOf(rootIdent) == obj {
 			return true
 		}
 	}
@@ -374,4 +376,19 @@ func stmtSetsAllowImplicitForObj(stmt ast.Stmt, obj types.Object, pass *analysis
 	}
 
 	return false
+}
+
+func rootIdent(expr ast.Expr) *ast.Ident {
+	for {
+		switch typedExpr := expr.(type) {
+		case *ast.Ident:
+			return typedExpr
+		case *ast.ParenExpr:
+			expr = typedExpr.X
+		case *ast.StarExpr:
+			expr = typedExpr.X
+		default:
+			return nil
+		}
+	}
 }
