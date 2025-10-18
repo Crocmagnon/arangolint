@@ -28,20 +28,16 @@ trx, _ = db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &arangodb.B
 trx, _ = db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &arangodb.BeginTransactionOptions{AllowImplicit: false})
 trx, _ = db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &arangodb.BeginTransactionOptions{AllowImplicit: true, LockTimeout: 0})
 
-// Indirect via variable (no pointer)
+// Indirect
 options := arangodb.BeginTransactionOptions{LockTimeout: 0}
 db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options) // want "missing AllowImplicit option"
 options.AllowImplicit = true
 db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options)
-
-// Indirect via pointer variable
-optns := &arangodb.BeginTransactionOptions{LockTimeout: 0}
-db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns) // want "missing AllowImplicit option"
-optns.AllowImplicit = true
-db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns)
 ```
 
 Notes and limitations:
-* Variable tracking is block-scoped and flow-sensitive across the nearest and ancestor blocks within the current function.
-* It detects AllowImplicit when set in the composite literal initialization or via an explicit assignment (e.g., options.AllowImplicit = ...).
-* It does not perform inter-procedural analysis or track values across complex control flow at this time.
+- Intra-procedural only: the analyzer does not follow values across function/method boundaries.
+- Flow- and block-sensitive within the current function: prior statements in the nearest block and its ancestor blocks are considered when evaluating a call site.
+- What is detected: AllowImplicit set either in a composite literal initialization (e.g., &arangodb.BeginTransactionOptions{AllowImplicit: true}) or via an explicit assignment before the call (e.g., opts.AllowImplicit = ...).
+- Conservative by design: when the options value comes from an unknown factory/helper call, arangolint assumes AllowImplicit may be set to avoid false positives.
+- Out of scope (for now): inter-procedural tracking, deep control-flow analysis, and inference through complex aliasing beyond simple identifiers and selectors.
