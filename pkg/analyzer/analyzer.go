@@ -14,7 +14,7 @@ import (
 	"golang.org/x/tools/go/ast/inspector"
 )
 
-const wantOption = "AllowImplicit"
+const allowImplicitFieldName = "AllowImplicit"
 
 // NewAnalyzer returns an arangolint analyzer.
 func NewAnalyzer() *analysis.Analyzer {
@@ -31,7 +31,13 @@ var (
 	errInvalidAnalysis = errors.New("invalid analysis")
 )
 
-const missingAllowImplicitOptionMsg = "missing AllowImplicit option"
+const msgMissingAllowImplicit = "missing AllowImplicit option"
+
+const (
+	methodBeginTransaction   = "BeginTransaction"
+	expectedBeginTxnArgs     = 3
+	arangoDatabaseTypeSuffix = "github.com/arangodb/go-driver/v2/arangodb.Database"
+)
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	inspctr, typeValid := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
@@ -65,7 +71,7 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 
 	diag := analysis.Diagnostic{
 		Pos:     call.Pos(),
-		Message: missingAllowImplicitOptionMsg,
+		Message: msgMissingAllowImplicit,
 	}
 
 	// Normalize the 3rd argument by unwrapping parentheses
@@ -73,7 +79,7 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 
 	switch typedArg := arg.(type) {
 	case *ast.Ident:
-		if typedArg.Name == "nil" {
+		if isNilIdent(typedArg) {
 			pass.Report(diag)
 
 			return
@@ -132,18 +138,30 @@ func unwrapParens(arg ast.Expr) ast.Expr {
 	}
 }
 
+// isNilIdent reports whether e is an identifier named "nil".
+func isNilIdent(e ast.Expr) bool {
+	id, ok := e.(*ast.Ident)
+
+	return ok && id.Name == "nil"
+}
+
+// isAllowImplicitSelector reports whether s selects the AllowImplicit field.
+func isAllowImplicitSelector(s *ast.SelectorExpr) bool {
+	return s != nil && s.Sel != nil && s.Sel.Name == allowImplicitFieldName
+}
+
 func isBeginTransaction(call *ast.CallExpr, pass *analysis.Pass) bool {
 	selExpr, isSelector := call.Fun.(*ast.SelectorExpr)
 	if !isSelector {
 		return false
 	}
 
-	if selExpr.Sel == nil || selExpr.Sel.Name != "BeginTransaction" {
+	if selExpr.Sel == nil || selExpr.Sel.Name != methodBeginTransaction {
 		return false
 	}
 
-	const expectedArgsCount = 3
-	if len(call.Args) != expectedArgsCount {
+	// Validate expected args count with extracted constant for clarity
+	if len(call.Args) != expectedBeginTxnArgs {
 		return false
 	}
 
@@ -152,7 +170,7 @@ func isBeginTransaction(call *ast.CallExpr, pass *analysis.Pass) bool {
 		if obj := sel.Obj(); obj != nil {
 			if pkg := obj.Pkg(); pkg != nil &&
 				pkg.Path() == "github.com/arangodb/go-driver/v2/arangodb" &&
-				obj.Name() == "BeginTransaction" {
+				obj.Name() == methodBeginTransaction {
 				return true
 			}
 		}
@@ -164,9 +182,7 @@ func isBeginTransaction(call *ast.CallExpr, pass *analysis.Pass) bool {
 		return false
 	}
 
-	const arangoStruct = "github.com/arangodb/go-driver/v2/arangodb.Database"
-
-	return strings.HasSuffix(xType.String(), arangoStruct)
+	return strings.HasSuffix(xType.String(), arangoDatabaseTypeSuffix)
 }
 
 func getElts(node ast.Node) ([]ast.Expr, error) {
@@ -196,7 +212,7 @@ func eltIsAllowImplicit(expr ast.Expr) bool {
 			return false
 		}
 
-		return ident.Name == wantOption
+		return ident.Name == allowImplicitFieldName
 	default:
 		return false
 	}
@@ -242,7 +258,7 @@ func setsAllowImplicitForObjectInAssign(stmt ast.Stmt, obj types.Object, pass *a
 			continue
 		}
 
-		if sel.Sel == nil || sel.Sel.Name != wantOption {
+		if !isAllowImplicitSelector(sel) {
 			continue
 		}
 
@@ -525,7 +541,7 @@ func isTypeConversionToTxnOptionsPtrNil(call *ast.CallExpr, pass *analysis.Pass)
 		return false
 	}
 
-	if id, ok := call.Args[0].(*ast.Ident); !ok || id.Name != "nil" {
+	if !isNilIdent(call.Args[0]) {
 		return false
 	}
 	// Check the target type is a pointer type
@@ -580,7 +596,7 @@ func hasAllowImplicitForPackageVar(pass *analysis.Pass, obj types.Object) bool {
 }
 
 // compositeAllowsImplicit reports whether expr is a composite literal (or address-of one)
-// that contains a KeyValueExpr with key ident named wantOption ("AllowImplicit").
+// that contains a KeyValueExpr with key ident named allowImplicitFieldName ("AllowImplicit").
 // It returns (has, ok) where ok indicates the expression was a recognized composite literal shape.
 func compositeAllowsImplicit(expr ast.Expr) (bool, bool) {
 	expr = unwrapParens(expr)
@@ -594,7 +610,7 @@ func compositeAllowsImplicit(expr ast.Expr) (bool, bool) {
 	if cl, ok := expr.(*ast.CompositeLit); ok {
 		for _, elt := range cl.Elts {
 			if kv, ok := elt.(*ast.KeyValueExpr); ok {
-				if ident, ok := kv.Key.(*ast.Ident); ok && ident.Name == wantOption {
+				if ident, ok := kv.Key.(*ast.Ident); ok && ident.Name == allowImplicitFieldName {
 					return true, true
 				}
 			}
