@@ -14,6 +14,8 @@ import (
 	"golang.org/x/tools/go/ast/inspector"
 )
 
+const wantOption = "AllowImplicit"
+
 // NewAnalyzer returns an arangolint analyzer.
 func NewAnalyzer() *analysis.Analyzer {
 	return &analysis.Analyzer{
@@ -76,7 +78,10 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 		Message: missingAllowImplicitOptionMsg,
 	}
 
-	switch typedArg := call.Args[2].(type) {
+	// Normalize the 3rd argument by unwrapping parentheses
+	arg := unwrapParens(call.Args[2])
+
+	switch typedArg := arg.(type) {
 	case *ast.Ident:
 		if typedArg.Name == "nil" {
 			pass.Report(diag)
@@ -107,6 +112,32 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 			}
 
 			pass.Report(diag)
+		}
+	case *ast.SelectorExpr:
+		// s.opts (or nested) passed as options
+		if hasAllowImplicitForSelector(typedArg, pass, stack, call.Pos()) {
+			return
+		}
+
+		pass.Report(diag)
+	case *ast.CallExpr:
+		// Typed conversion like (*arangodb.BeginTransactionOptions)(nil)
+		if isTypeConversionToTxnOptionsPtrNil(typedArg, pass) {
+			pass.Report(diag)
+
+			return
+		}
+		// For other calls (factory/helpers), we stay conservative to avoid false positives.
+	}
+}
+
+func unwrapParens(arg ast.Expr) ast.Expr {
+	for {
+		switch typedArg := arg.(type) {
+		case *ast.ParenExpr:
+			arg = typedArg.X
+		default:
+			return arg
 		}
 	}
 }
@@ -161,10 +192,80 @@ func eltIsAllowImplicit(expr ast.Expr) bool {
 			return false
 		}
 
-		return ident.Name == "AllowImplicit"
+		return ident.Name == wantOption
 	default:
 		return false
 	}
+}
+
+// hasAllowImplicitForSelector checks if a selector expression (e.g., s.opts)
+// has had its AllowImplicit field set prior to the call position within
+// the nearest or any ancestor block. This is a conservative intra-procedural check.
+func hasAllowImplicitForSelector(
+	sel *ast.SelectorExpr,
+	pass *analysis.Pass,
+	stack []ast.Node,
+	callPos token.Pos,
+) bool {
+	root := rootIdent(sel)
+	if root == nil {
+		return false
+	}
+
+	rootObj := pass.TypesInfo.ObjectOf(root)
+	if rootObj == nil {
+		return false
+	}
+
+	blocks := ancestorBlocks(stack)
+	for _, blk := range blocks {
+		for _, stmt := range blk.List {
+			if stmt == nil {
+				continue
+			}
+
+			if stmt.Pos() >= callPos {
+				break
+			}
+
+			if hasAllowImplicitAssignForRoot(stmt, rootObj, pass) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// hasAllowImplicitAssignForRoot reports true if the statement assigns to
+// *.AllowImplicit where the root identifier object matches rootObj.
+func hasAllowImplicitAssignForRoot(stmt ast.Stmt, rootObj types.Object, pass *analysis.Pass) bool {
+	as, ok := stmt.(*ast.AssignStmt)
+	if !ok {
+		return false
+	}
+
+	for _, lhs := range as.Lhs {
+		sel, ok := lhs.(*ast.SelectorExpr)
+		if !ok {
+			continue
+		}
+
+		if sel.Sel == nil || sel.Sel.Name != wantOption {
+			continue
+		}
+
+		r := rootIdent(sel.X)
+		if r == nil {
+			continue
+		}
+
+		if pass.TypesInfo.ObjectOf(r) == rootObj {
+			return true
+		}
+	}
+
+	return false
 }
 
 // hasAllowImplicitForIdent checks whether the given identifier (variable or pointer to options)
@@ -230,16 +331,16 @@ func hasAllowImplicitAssignForObj(stmt ast.Stmt, obj types.Object, pass *analysi
 			continue
 		}
 
-		if sel.Sel == nil || sel.Sel.Name != "AllowImplicit" {
+		if sel.Sel == nil || sel.Sel.Name != wantOption {
 			continue
 		}
 
-		rootIdent := rootIdent(sel.X)
-		if rootIdent == nil {
+		ident := rootIdent(sel.X)
+		if ident == nil {
 			continue
 		}
 
-		if pass.TypesInfo.ObjectOf(rootIdent) == obj {
+		if pass.TypesInfo.ObjectOf(ident) == obj {
 			return true
 		}
 	}
@@ -389,10 +490,45 @@ func rootIdent(expr ast.Expr) *ast.Ident {
 			expr = typedExpr.X
 		case *ast.StarExpr:
 			expr = typedExpr.X
+		case *ast.SelectorExpr:
+			// walk down the selector chain until we hit the root identifier
+			expr = typedExpr.X
 		default:
 			return nil
 		}
 	}
+}
+
+func isTypeConversionToTxnOptionsPtrNil(call *ast.CallExpr, pass *analysis.Pass) bool {
+	// single arg must be a nil identifier
+	if len(call.Args) != 1 {
+		return false
+	}
+
+	if id, ok := call.Args[0].(*ast.Ident); !ok || id.Name != "nil" {
+		return false
+	}
+	// Check the target type is a pointer type
+	if t := pass.TypesInfo.TypeOf(call.Fun); t != nil {
+		if _, ok := t.(*types.Pointer); ok {
+			return true
+		}
+	}
+	// Fallback to a syntactic check
+	fun := call.Fun
+	for {
+		if p, ok := fun.(*ast.ParenExpr); ok {
+			fun = p.X
+
+			continue
+		}
+
+		break
+	}
+
+	_, ok := fun.(*ast.StarExpr)
+
+	return ok
 }
 
 // hasAllowImplicitForPackageVar scans all files for top-level var declarations

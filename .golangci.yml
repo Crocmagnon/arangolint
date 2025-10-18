@@ -8,6 +8,9 @@ linters:
     - exhaustruct
     - nonamedreturns
     - wsl
+  settings:
+    cyclop:
+      max-complexity: 15
 formatters:
   enable:
     - goimports
