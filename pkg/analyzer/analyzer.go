@@ -181,10 +181,6 @@ func hasAllowImplicitForIdent(
 	}
 
 	blocks := ancestorBlocks(stack)
-	if len(blocks) == 0 {
-		return false
-	}
-
 	// Walk from the nearest block outward and scan statements before the call position
 	for _, blk := range blocks {
 		for _, stmt := range blk.List {
@@ -200,6 +196,12 @@ func hasAllowImplicitForIdent(
 				return true
 			}
 		}
+	}
+
+	// If not found in local/ancestor blocks, also check for package-level (global)
+	// variable declarations that initialize AllowImplicit.
+	if hasAllowImplicitForPackageVar(pass, obj) {
+		return true
 	}
 
 	return false
@@ -391,4 +393,32 @@ func rootIdent(expr ast.Expr) *ast.Ident {
 			return nil
 		}
 	}
+}
+
+// hasAllowImplicitForPackageVar scans all files for top-level var declarations
+// of the given object and returns true if its initialization sets AllowImplicit.
+func hasAllowImplicitForPackageVar(pass *analysis.Pass, obj types.Object) bool {
+	// Only variables can be relevant here, but the object identity check below
+	// will safely no-op for others.
+	for _, f := range pass.Files {
+		for _, decl := range f.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.VAR {
+				continue
+			}
+
+			for _, spec := range genDecl.Specs {
+				valueSpec, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+
+				if valueSpecHasAllowImplicitForObj(valueSpec, obj, pass) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }

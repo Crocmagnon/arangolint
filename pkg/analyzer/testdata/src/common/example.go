@@ -10,6 +10,11 @@ type dbclient struct {
 	db arangodb.Database
 }
 
+var (
+	unsafe = &arangodb.BeginTransactionOptions{}
+	safe   = &arangodb.BeginTransactionOptions{AllowImplicit: false}
+)
+
 func example() {
 	ctx := context.Background()
 	arangoClient := arangodb.NewClient(nil)
@@ -63,6 +68,10 @@ func example() {
 	// var declaration (pointer)
 	var optns2 = &arangodb.BeginTransactionOptions{LockTimeout: 0}
 	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns2) // want "missing AllowImplicit option"
+	if true {
+		db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns2) // want "missing AllowImplicit option"
+	}
+
 	optns2.AllowImplicit = true
 	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns2)
 
@@ -76,5 +85,10 @@ func example() {
 
 	if true {
 		db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns3)
+	}
+
+	if true {
+		db.BeginTransaction(ctx, arangodb.TransactionCollections{}, unsafe) // want "missing AllowImplicit option"
+		db.BeginTransaction(ctx, arangodb.TransactionCollections{}, safe)
 	}
 }
