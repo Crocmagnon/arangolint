@@ -148,6 +148,27 @@ func isBeginTransaction(call *ast.CallExpr, pass *analysis.Pass) bool {
 		return false
 	}
 
+	if selExpr.Sel == nil || selExpr.Sel.Name != "BeginTransaction" {
+		return false
+	}
+
+	const expectedArgsCount = 3
+	if len(call.Args) != expectedArgsCount {
+		return false
+	}
+
+	// Prefer selection-based detection to support wrappers with embedded arangodb.Database
+	if sel := pass.TypesInfo.Selections[selExpr]; sel != nil {
+		if obj := sel.Obj(); obj != nil {
+			if pkg := obj.Pkg(); pkg != nil &&
+				pkg.Path() == "github.com/arangodb/go-driver/v2/arangodb" &&
+				obj.Name() == "BeginTransaction" {
+				return true
+			}
+		}
+	}
+
+	// Fallback: direct receiver type match or alias that preserves the type name suffix
 	xType := pass.TypesInfo.TypeOf(selExpr.X)
 	if xType == nil {
 		return false
@@ -155,14 +176,7 @@ func isBeginTransaction(call *ast.CallExpr, pass *analysis.Pass) bool {
 
 	const arangoStruct = "github.com/arangodb/go-driver/v2/arangodb.Database"
 
-	if !strings.HasSuffix(xType.String(), arangoStruct) ||
-		selExpr.Sel.Name != "BeginTransaction" {
-		return false
-	}
-
-	const expectedArgsCount = 3
-
-	return len(call.Args) == expectedArgsCount
+	return strings.HasSuffix(xType.String(), arangoStruct)
 }
 
 func getElts(node ast.Node) ([]ast.Expr, error) {
@@ -463,19 +477,78 @@ func valueSpecHasAllowImplicitForObj(
 	return false
 }
 
+// function handles multiple statement forms; refactoring would hurt clarity.
+//
+//nolint:gocognit,cyclop,funlen
 func stmtSetsAllowImplicitForObj(stmt ast.Stmt, obj types.Object, pass *analysis.Pass) bool {
+	// Direct assignment like opts.AllowImplicit = true
 	if hasAllowImplicitAssignForObj(stmt, obj, pass) {
 		return true
 	}
 
+	// Variable initialization via assignment (short var or regular assignment)
 	if as, ok := stmt.(*ast.AssignStmt); ok {
 		if initHasAllowImplicitForObj(as, obj, pass) {
 			return true
 		}
 	}
 
+	// Variable declaration with initialization
 	if declInitHasAllowImplicitForObj(stmt, obj, pass) {
 		return true
+	}
+
+	// Control-flow constructs that may contain relevant prior mutations/initializations
+	switch stmtNode := stmt.(type) {
+	case *ast.IfStmt:
+		// Recurse into body statements
+		for _, st := range stmtNode.Body.List {
+			if stmtSetsAllowImplicitForObj(st, obj, pass) {
+				return true
+			}
+		}
+		// Else can be another IfStmt (else-if) or a BlockStmt
+		switch elseNode := stmtNode.Else.(type) {
+		case *ast.BlockStmt:
+			for _, st := range elseNode.List {
+				if stmtSetsAllowImplicitForObj(st, obj, pass) {
+					return true
+				}
+			}
+		case *ast.IfStmt:
+			if stmtSetsAllowImplicitForObj(elseNode, obj, pass) {
+				return true
+			}
+		}
+	case *ast.ForStmt:
+		// e.g., for i := 0; i < n; i++ { opts.AllowImplicit = true }
+		if as, ok := stmtNode.Init.(*ast.AssignStmt); ok {
+			if initHasAllowImplicitForObj(as, obj, pass) {
+				return true
+			}
+		}
+
+		for _, st := range stmtNode.Body.List {
+			if stmtSetsAllowImplicitForObj(st, obj, pass) {
+				return true
+			}
+		}
+	case *ast.SwitchStmt:
+		if as, ok := stmtNode.Init.(*ast.AssignStmt); ok {
+			if initHasAllowImplicitForObj(as, obj, pass) {
+				return true
+			}
+		}
+
+		for _, cc := range stmtNode.Body.List {
+			if clause, ok := cc.(*ast.CaseClause); ok {
+				for _, st := range clause.Body {
+					if stmtSetsAllowImplicitForObj(st, obj, pass) {
+						return true
+					}
+				}
+			}
+		}
 	}
 
 	return false
