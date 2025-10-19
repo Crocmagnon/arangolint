@@ -78,7 +78,7 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 	}
 
 	diag := analysis.Diagnostic{
-		Pos:     call.Pos(),
+		Pos:     call.Args[2].Pos(),
 		Message: msgMissingAllowImplicit,
 	}
 
