@@ -16,7 +16,7 @@ func rangeLoops() {
 	for range []int{1, 2, 3} {
 		opts.AllowImplicit = true
 	}
-	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, opts) // want "missing AllowImplicit option"
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, opts)
 
 	// Control: no mutation in range.
 	opts2 := &arangodb.BeginTransactionOptions{}

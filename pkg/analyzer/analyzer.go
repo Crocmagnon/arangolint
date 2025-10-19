@@ -461,6 +461,10 @@ func stmtSetsAllowImplicitForObj(stmt ast.Stmt, obj types.Object, pass *analysis
 		if handleForAllowImplicit(stmtNode, obj, pass) {
 			return true
 		}
+	case *ast.RangeStmt:
+		if handleRangeAllowImplicit(stmtNode, obj, pass) {
+			return true
+		}
 	case *ast.SwitchStmt:
 		if handleSwitchAllowImplicit(stmtNode, obj, pass) {
 			return true
@@ -642,6 +646,22 @@ func handleSwitchAllowImplicit(
 					return true
 				}
 			}
+		}
+	}
+
+	return false
+}
+
+// handleRangeAllowImplicit scans a range statement's body for assignments or initializations
+// that set AllowImplicit for the given object. Mirrors ForStmt handling semantics.
+func handleRangeAllowImplicit(stmtNode *ast.RangeStmt, obj types.Object, pass *analysis.Pass) bool {
+	if stmtNode == nil || stmtNode.Body == nil {
+		return false
+	}
+
+	for _, st := range stmtNode.Body.List {
+		if stmtSetsAllowImplicitForObj(st, obj, pass) {
+			return true
 		}
 	}
 
