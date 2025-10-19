@@ -99,7 +99,7 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 
 		pass.Report(diag)
 	case *ast.UnaryExpr:
-		// &CompositeLit or &ident
+		// &CompositeLit or &ident or &index
 		if has, ok := compositeAllowsImplicit(optsExpr); ok {
 			if !has {
 				pass.Report(diag)
@@ -115,10 +115,29 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 			}
 
 			pass.Report(diag)
+
+			return
+		}
+		// not &ident, try &index (e.g., &arr[i])
+		if idx, ok := optsExpr.X.(*ast.IndexExpr); ok {
+			if hasAllowImplicitForIndex(idx, pass, stack, call.Pos()) {
+				return
+			}
+
+			pass.Report(diag)
+
+			return
 		}
 	case *ast.SelectorExpr:
 		// s.opts (or nested) passed as options
 		if hasAllowImplicitForSelector(optsExpr, pass, stack, call.Pos()) {
+			return
+		}
+
+		pass.Report(diag)
+	case *ast.IndexExpr:
+		// opts passed as an indexed element, e.g., arr[i]
+		if hasAllowImplicitForIndex(optsExpr, pass, stack, call.Pos()) {
 			return
 		}
 
@@ -217,7 +236,16 @@ func hasAllowImplicitForSelector(
 	stack []ast.Node,
 	callPos token.Pos,
 ) bool {
+	// Try to resolve the root identifier normally (handles ident, parens, star, chained selectors)
 	root := rootIdent(sel)
+
+	// Fallback: the selector may be rooted at an index expression, e.g., arr[i].opts
+	if root == nil {
+		if innerIdx, ok := sel.X.(*ast.IndexExpr); ok {
+			root = rootIdent(innerIdx.X)
+		}
+	}
+
 	if root == nil {
 		return false
 	}
@@ -252,13 +280,29 @@ func setsAllowImplicitForObjectInAssign(stmt ast.Stmt, obj types.Object, pass *a
 			continue
 		}
 
-		r := rootIdent(sel.X)
-		if r == nil {
+		// Try standard root resolution first (ident, parens, star, chained selectors)
+		if r := rootIdent(sel.X); r != nil {
+			if pass.TypesInfo.ObjectOf(r) == obj {
+				return true
+			}
+
+			// Not the same object; proceed to next LHS
 			continue
 		}
 
-		if pass.TypesInfo.ObjectOf(r) == obj {
-			return true
+		// Handle index expression roots like arr[i].AllowImplicit
+		if idx, ok := sel.X.(*ast.IndexExpr); ok {
+			if root := rootIdent(idx.X); root != nil && pass.TypesInfo.ObjectOf(root) == obj {
+				return true
+			}
+		}
+		// Handle nested selector rooted by an index expression, e.g., arr[i].opts.AllowImplicit
+		if innerSel, ok := sel.X.(*ast.SelectorExpr); ok {
+			if idx, ok := innerSel.X.(*ast.IndexExpr); ok {
+				if root := rootIdent(idx.X); root != nil && pass.TypesInfo.ObjectOf(root) == obj {
+					return true
+				}
+			}
 		}
 	}
 
@@ -666,4 +710,34 @@ func handleRangeAllowImplicit(stmtNode *ast.RangeStmt, obj types.Object, pass *a
 	}
 
 	return false
+}
+
+// hasAllowImplicitForIndex checks if an index expression (e.g., arr[i] or arr[i].<field> via nested selectors)
+// refers to an array/slice whose elements had AllowImplicit set prior to the call position within
+// the nearest or any ancestor block. We match based on the root array/slice identifier object.
+func hasAllowImplicitForIndex(
+	idx *ast.IndexExpr,
+	pass *analysis.Pass,
+	stack []ast.Node,
+	callPos token.Pos,
+) bool {
+	if idx == nil {
+		return false
+	}
+
+	root := rootIdent(idx.X)
+	if root == nil {
+		return false
+	}
+
+	obj := pass.TypesInfo.ObjectOf(root)
+	if obj == nil {
+		return false
+	}
+
+	blocks := ancestorBlocks(stack)
+
+	return scanPriorStatements(blocks, callPos, func(stmt ast.Stmt) bool {
+		return setsAllowImplicitForObjectInAssign(stmt, obj, pass)
+	})
 }
