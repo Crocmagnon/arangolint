@@ -229,10 +229,20 @@ func hasAllowImplicitForSelector(
 	stack []ast.Node,
 	callPos token.Pos,
 ) bool {
+	// Special case: selector rooted at an index expression, e.g., arr[i].opts.
+	// In this case we must match both the base array/slice object and the specific index.
+	if innerIdx, ok := sel.X.(*ast.IndexExpr); ok {
+		blocks := ancestorBlocks(stack)
+
+		return scanPriorStatements(blocks, callPos, func(stmt ast.Stmt) bool {
+			return setsAllowImplicitForIndex(stmt, innerIdx, pass)
+		})
+	}
+
 	// Try to resolve the root identifier normally (handles ident, parens, star, chained selectors)
 	root := rootIdent(sel)
 
-	// Fallback: the selector may be rooted at an index expression, e.g., arr[i].opts
+	// Fallback: selector rooted indirectly via slice/index (e.g., arr[1:].opts)
 	if root == nil {
 		if innerIdx, ok := sel.X.(*ast.IndexExpr); ok {
 			root = rootIdent(innerIdx.X)
@@ -511,6 +521,9 @@ func stmtSetsAllowImplicitForObj(stmt ast.Stmt, obj types.Object, pass *analysis
 	return false
 }
 
+// rootIdent returns the underlying identifier by peeling parens, stars,
+// selectors, index, and slice expressions. It is intended for cases where we
+// must resolve the base collection identifier behind arr[i], arr[1:], etc.
 func rootIdent(expr ast.Expr) *ast.Ident {
 	for {
 		switch typedExpr := expr.(type) {
@@ -521,7 +534,10 @@ func rootIdent(expr ast.Expr) *ast.Ident {
 		case *ast.StarExpr:
 			expr = typedExpr.X
 		case *ast.SelectorExpr:
-			// walk down the selector chain until we hit the root identifier
+			expr = typedExpr.X
+		case *ast.IndexExpr:
+			expr = typedExpr.X
+		case *ast.SliceExpr:
 			expr = typedExpr.X
 		default:
 			return nil
@@ -706,8 +722,8 @@ func handleRangeAllowImplicit(stmtNode *ast.RangeStmt, obj types.Object, pass *a
 }
 
 // hasAllowImplicitForIndex checks if an index expression (e.g., arr[i] or arr[i].<field> via nested selectors)
-// refers to an array/slice whose elements had AllowImplicit set prior to the call position within
-// the nearest or any ancestor block. We match based on the root array/slice identifier object.
+// refers to an array/slice element whose AllowImplicit field was set prior to the call position within
+// the nearest or any ancestor block. We require both the same base identifier and the same index (when resolvable).
 func hasAllowImplicitForIndex(
 	idx *ast.IndexExpr,
 	pass *analysis.Pass,
@@ -718,19 +734,85 @@ func hasAllowImplicitForIndex(
 		return false
 	}
 
-	root := rootIdent(idx.X)
-	if root == nil {
-		return false
-	}
-
-	obj := pass.TypesInfo.ObjectOf(root)
-	if obj == nil {
-		return false
-	}
-
 	blocks := ancestorBlocks(stack)
 
 	return scanPriorStatements(blocks, callPos, func(stmt ast.Stmt) bool {
-		return setsAllowImplicitForObjectInAssign(stmt, obj, pass)
+		return setsAllowImplicitForIndex(stmt, idx, pass)
 	})
+}
+
+// sameIndex reports whether two index expressions refer to the same constant index.
+// It only returns true for simple integer literals with the same value. For other
+// shapes it returns false (unknown), keeping analysis conservative.
+func sameIndex(a, exprB ast.Expr) bool {
+	a = unwrapParens(a)
+	exprB = unwrapParens(exprB)
+
+	litA, oka := a.(*ast.BasicLit)
+
+	litB, okb := exprB.(*ast.BasicLit)
+	if !oka || !okb {
+		return false
+	}
+
+	if litA.Kind != token.INT || litB.Kind != token.INT {
+		return false
+	}
+
+	return litA.Value == litB.Value
+}
+
+// sameIndexBase reports whether two index expressions share the same base identifier
+// (array/slice variable) and the same constant index.
+func sameIndexBase(idxA, idxB *ast.IndexExpr, pass *analysis.Pass) bool {
+	baseA := rootIdent(idxA.X)
+	baseB := rootIdent(idxB.X)
+
+	if baseA == nil || baseB == nil {
+		return false
+	}
+
+	if pass.TypesInfo.ObjectOf(baseA) != pass.TypesInfo.ObjectOf(baseB) {
+		return false
+	}
+
+	return sameIndex(idxA.Index, idxB.Index)
+}
+
+// setsAllowImplicitForIndex reports true if stmt assigns to AllowImplicit for the
+// specific element referenced by target (matching both base and index).
+func setsAllowImplicitForIndex(stmt ast.Stmt, target *ast.IndexExpr, pass *analysis.Pass) bool {
+	assign, ok := stmt.(*ast.AssignStmt)
+	if !ok {
+		return false
+	}
+
+	for _, lhs := range assign.Lhs {
+		sel, ok := lhs.(*ast.SelectorExpr)
+		if !ok {
+			continue
+		}
+
+		if !isAllowImplicitSelector(sel) {
+			continue
+		}
+
+		// Direct element field assignment: arr[i].AllowImplicit = ...
+		if idx, ok := sel.X.(*ast.IndexExpr); ok {
+			if sameIndexBase(idx, target, pass) {
+				return true
+			}
+		}
+
+		// Nested field after element selection: arr[i].opts.AllowImplicit = ...
+		if innerSel, ok := sel.X.(*ast.SelectorExpr); ok {
+			if idx, ok := innerSel.X.(*ast.IndexExpr); ok {
+				if sameIndexBase(idx, target, pass) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }
