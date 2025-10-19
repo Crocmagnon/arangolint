@@ -85,72 +85,65 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 	// Normalize the 3rd argument by unwrapping parentheses
 	arg := unwrapParens(call.Args[2])
 
+	if shouldReportMissingAllowImplicit(arg, pass, stack, call.Pos()) {
+		pass.Report(diag)
+	}
+}
+
+// shouldReportMissingAllowImplicit returns true when the provided 3rd argument
+// expression should trigger the "missing AllowImplicit" diagnostic, and false
+// when the argument is known to have AllowImplicit set (or when we must stay
+// conservative and avoid reporting).
+func shouldReportMissingAllowImplicit(
+	arg ast.Expr,
+	pass *analysis.Pass,
+	stack []ast.Node,
+	callPos token.Pos,
+) bool {
 	switch optsExpr := arg.(type) {
 	case *ast.Ident:
+		// direct identifier or nil
 		if isNilIdent(optsExpr) {
-			pass.Report(diag)
-
-			return
+			return true
 		}
 
-		if hasAllowImplicitForIdent(optsExpr, pass, stack, call.Pos()) {
-			return
-		}
+		return !hasAllowImplicitForIdent(optsExpr, pass, stack, callPos)
 
-		pass.Report(diag)
 	case *ast.UnaryExpr:
 		// &CompositeLit or &ident or &index
 		if has, ok := compositeAllowsImplicit(optsExpr); ok {
-			if !has {
-				pass.Report(diag)
-			}
-
-			return
+			return !has
 		}
-
 		// not a composite literal, try &ident
 		if id, ok := optsExpr.X.(*ast.Ident); ok {
-			if hasAllowImplicitForIdent(id, pass, stack, call.Pos()) {
-				return
-			}
-
-			pass.Report(diag)
-
-			return
+			return !hasAllowImplicitForIdent(id, pass, stack, callPos)
 		}
 		// not &ident, try &index (e.g., &arr[i])
 		if idx, ok := optsExpr.X.(*ast.IndexExpr); ok {
-			if hasAllowImplicitForIndex(idx, pass, stack, call.Pos()) {
-				return
-			}
-
-			pass.Report(diag)
-
-			return
+			return !hasAllowImplicitForIndex(idx, pass, stack, callPos)
 		}
+		// Unknown &shape: stay conservative (do not report)
+		return false
+
 	case *ast.SelectorExpr:
 		// s.opts (or nested) passed as options
-		if hasAllowImplicitForSelector(optsExpr, pass, stack, call.Pos()) {
-			return
-		}
+		return !hasAllowImplicitForSelector(optsExpr, pass, stack, callPos)
 
-		pass.Report(diag)
 	case *ast.IndexExpr:
 		// opts passed as an indexed element, e.g., arr[i]
-		if hasAllowImplicitForIndex(optsExpr, pass, stack, call.Pos()) {
-			return
-		}
+		return !hasAllowImplicitForIndex(optsExpr, pass, stack, callPos)
 
-		pass.Report(diag)
 	case *ast.CallExpr:
 		// Typed conversion like (*arangodb.BeginTransactionOptions)(nil)
 		if isTypeConversionToTxnOptionsPtrNil(optsExpr, pass) {
-			pass.Report(diag)
-
-			return
+			return true
 		}
 		// For other calls (factory/helpers), we stay conservative to avoid false positives.
+		return false
 	}
+
+	// Default: unknown expression shapes — stay conservative and do not report.
+	return false
 }
 
 func unwrapParens(arg ast.Expr) ast.Expr {
