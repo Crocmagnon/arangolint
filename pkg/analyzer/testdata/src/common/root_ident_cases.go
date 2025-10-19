@@ -47,6 +47,7 @@ func rootIdentCases() {
 	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, arr[0].opts)
 
 	arr2 := make([]*arangodb.BeginTransactionOptions, 1)
+	arr2[0] = &arangodb.BeginTransactionOptions{}
 	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, arr2[0]) // want "missing AllowImplicit option"
 	arr2[0].AllowImplicit = true
 	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, arr2[0])
