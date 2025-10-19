@@ -45,7 +45,7 @@ func example() {
 	// direct with other fields
 	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &arangodb.BeginTransactionOptions{AllowImplicit: true, LockTimeout: 0})
 	dbc.db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &arangodb.BeginTransactionOptions{AllowImplicit: true, LockTimeout: 0})
-	trx, _ = db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &arangodb.BeginTransactionOptions{AllowImplicit: true, LockTimeout: 0})
+	trx, _ = db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &arangodb.BeginTransactionOptions{LockTimeout: 0, AllowImplicit: true})
 
 	// indirect no pointer
 	options := arangodb.BeginTransactionOptions{LockTimeout: 0}
@@ -82,6 +82,11 @@ func example() {
 	// var declaration with AllowImplicit in init (pointer)
 	var optns3 = &arangodb.BeginTransactionOptions{AllowImplicit: true}
 	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns3)
+
+	var options4 arangodb.BeginTransactionOptions
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options4) // want "missing AllowImplicit option"
+	options4.AllowImplicit = true
+	db.BeginTransaction(ctx, arangodb.TransactionCollections{}, &options4)
 
 	if true {
 		db.BeginTransaction(ctx, arangodb.TransactionCollections{}, optns3)
