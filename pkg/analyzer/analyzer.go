@@ -493,8 +493,12 @@ func assignStmtAssignsConcatenation(
 		}
 
 		// Check for compound assignment (+=)
+		// Only flag if RHS is not a static string literal
 		if assign.Tok == token.ADD_ASSIGN {
-			return true
+			// Safe if adding only static string literals
+			if !isStringLiteral(rhs) {
+				return true
+			}
 		}
 	}
 

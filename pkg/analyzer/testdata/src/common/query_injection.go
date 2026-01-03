@@ -26,6 +26,11 @@ func queryInjectionExamples(db arangodb.Database, userName string, userAge int) 
 	q += " RETURN u"
 	db.Query(ctx, q, nil) // want "query string uses concatenation instead of bind variables"
 
+	// SAFE: Concatenation with += without variables
+	safeQ := "FOR u IN users"
+	safeQ += "RETURN u"
+	db.Query(ctx, safeQ, nil)
+
 	// UNSAFE: fmt.Sprintf
 	sprintfQuery := fmt.Sprintf("FOR u IN users FILTER u.name == '%s' RETURN u", userName)
 	db.Query(ctx, sprintfQuery, nil) // want "query string uses concatenation instead of bind variables"
