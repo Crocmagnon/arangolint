@@ -99,7 +99,7 @@ func handleBeginTransactionCall(call *ast.CallExpr, pass *analysis.Pass, stack [
 }
 
 // handleQueryCall validates Query/QueryBatch/ValidateQuery/ExplainQuery call sites
-// to detect SQL injection vulnerabilities via string concatenation.
+// to detect AQL injection vulnerabilities via string concatenation.
 func handleQueryCall(call *ast.CallExpr, pass *analysis.Pass, stack []ast.Node) {
 	methodName, queryArgIndex := identifyQueryMethod(call, pass)
 	if methodName == "" {
