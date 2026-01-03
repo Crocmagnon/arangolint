@@ -394,7 +394,7 @@ func isFmtSprintfCall(expr ast.Expr, pass *analysis.Pass) bool {
 
 	// Check if it's a Sprintf-like method
 	methodName := selExpr.Sel.Name
-	if !strings.HasPrefix(methodName, "Sprintf") && methodName != "Sprintf" {
+	if methodName != "Sprintf" {
 		return false
 	}
 
