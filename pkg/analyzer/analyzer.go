@@ -23,18 +23,19 @@ import (
 )
 
 const (
-	allowImplicitFieldName   = "AllowImplicit"
-	msgMissingAllowImplicit  = "missing AllowImplicit option"
-	msgQueryConcatenation    = "query string uses concatenation instead of bind variables"
-	methodBeginTransaction   = "BeginTransaction"
-	methodQuery              = "Query"
-	methodQueryBatch         = "QueryBatch"
-	methodValidateQuery      = "ValidateQuery"
-	methodExplainQuery       = "ExplainQuery"
-	expectedBeginTxnArgs     = 3
-	arangoDatabaseTypeSuffix = "github.com/arangodb/go-driver/v2/arangodb.Database"
-	arangoPackageSuffix      = "github.com/arangodb/go-driver/v2/arangodb"
-	fmtPackagePath           = "fmt"
+	allowImplicitFieldName      = "AllowImplicit"
+	msgMissingAllowImplicit     = "missing AllowImplicit option"
+	msgQueryConcatenation       = "query string uses concatenation instead of bind variables"
+	methodBeginTransaction      = "BeginTransaction"
+	methodQuery                 = "Query"
+	methodQueryBatch            = "QueryBatch"
+	methodValidateQuery         = "ValidateQuery"
+	methodExplainQuery          = "ExplainQuery"
+	expectedBeginTxnArgs        = 3
+	arangoDatabaseTypeSuffix    = "github.com/arangodb/go-driver/v2/arangodb.Database"
+	arangoTransactionTypeSuffix = "github.com/arangodb/go-driver/v2/arangodb.Transaction"
+	arangoPackageSuffix         = "github.com/arangodb/go-driver/v2/arangodb"
+	fmtPackagePath              = "fmt"
 )
 
 var errInvalidAnalysis = errors.New("invalid analysis")
@@ -121,8 +122,8 @@ func handleQueryCall(call *ast.CallExpr, pass *analysis.Pass, stack []ast.Node) 
 	}
 }
 
-// identifyQueryMethod checks if the call is to a Database query method and returns
-// the method name and the index of the query string argument.
+// identifyQueryMethod checks if the call is to a Database or Transaction query method
+// and returns the method name and the index of the query string argument.
 // Returns empty string if not a query method.
 func identifyQueryMethod(
 	call *ast.CallExpr,
@@ -134,48 +135,85 @@ func identifyQueryMethod(
 	}
 
 	methodName = selExpr.Sel.Name
-	switch methodName {
-	case methodQuery, methodQueryBatch, methodValidateQuery:
-		queryArgIndex = 1
-	case methodExplainQuery:
-		queryArgIndex = 1
-	default:
+
+	queryArgIndex = getQueryArgIndex(methodName)
+	if queryArgIndex == -1 {
 		return "", 0
 	}
 
-	// Verify it's called on a Database type
+	// Verify it's called on a Database or Transaction type
 	xType := pass.TypesInfo.TypeOf(selExpr.X)
 	if xType == nil {
 		return "", 0
 	}
 
-	// Try to find the arangodb package in the current package imports and get the Database type
-	var dbType types.Type
-
-	for _, imp := range pass.Pkg.Imports() {
-		if strings.HasSuffix(imp.Path(), arangoPackageSuffix) {
-			if obj := imp.Scope().Lookup("Database"); obj != nil {
-				if tn, ok := obj.(*types.TypeName); ok {
-					dbType = tn.Type()
-				}
-			}
-
-			break
-		}
-	}
-
-	if dbType != nil {
-		if types.AssignableTo(xType, dbType) {
-			return methodName, queryArgIndex
-		}
-	}
-
-	// Fallback: direct receiver type match
-	if strings.HasSuffix(xType.String(), arangoDatabaseTypeSuffix) {
+	if isQueryReceiverType(xType, pass) {
 		return methodName, queryArgIndex
 	}
 
 	return "", 0
+}
+
+// getQueryArgIndex returns the index of the query argument for a given method name,
+// or -1 if the method is not a query method.
+func getQueryArgIndex(methodName string) int {
+	switch methodName {
+	case methodQuery, methodQueryBatch, methodValidateQuery, methodExplainQuery:
+		return 1
+	default:
+		return -1
+	}
+}
+
+// isQueryReceiverType checks if the given type is a Database or Transaction type.
+func isQueryReceiverType(xType types.Type, pass *analysis.Pass) bool {
+	// Try to find the arangodb package and get Database and Transaction types
+	dbType, trxType := getArangoDBTypes(pass)
+
+	if dbType != nil && types.AssignableTo(xType, dbType) {
+		return true
+	}
+
+	if trxType != nil && types.AssignableTo(xType, trxType) {
+		return true
+	}
+
+	// Fallback: direct receiver type match
+	receiverTypeStr := xType.String()
+
+	return strings.HasSuffix(receiverTypeStr, arangoDatabaseTypeSuffix) ||
+		strings.HasSuffix(receiverTypeStr, arangoTransactionTypeSuffix)
+}
+
+// getArangoDBTypes retrieves the Database and Transaction types from the arangodb package.
+func getArangoDBTypes(pass *analysis.Pass) (dbType, trxType types.Type) {
+	for _, imp := range pass.Pkg.Imports() {
+		if !strings.HasSuffix(imp.Path(), arangoPackageSuffix) {
+			continue
+		}
+
+		dbType = lookupType(imp, "Database")
+		trxType = lookupType(imp, "Transaction")
+
+		break
+	}
+
+	return dbType, trxType
+}
+
+// lookupType looks up a type by name in a package scope.
+func lookupType(pkg *types.Package, name string) types.Type {
+	obj := pkg.Scope().Lookup(name)
+	if obj == nil {
+		return nil
+	}
+
+	tn, typeOK := obj.(*types.TypeName)
+	if !typeOK {
+		return nil
+	}
+
+	return tn.Type()
 }
 
 // shouldReportMissingAllowImplicit returns true when the provided 3rd argument

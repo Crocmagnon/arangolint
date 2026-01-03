@@ -91,13 +91,28 @@ db.Query(ctx, "FOR u IN users RETURN u", nil)
 // Good - Static concatenation (only string literals)
 staticQuery := "FOR u IN users" + " FILTER u.age > 18" + " RETURN u"
 db.Query(ctx, staticQuery, nil)
+
+// Works with transactions too
+trx, _ := db.BeginTransaction(ctx, arangodb.TransactionCollections{
+    Read: []string{"users"},
+}, &arangodb.BeginTransactionOptions{AllowImplicit: false})
+
+// Bad - Transaction query with concatenation
+trx.Query(ctx, "FOR u IN users FILTER u.name == '"+userName+"' RETURN u", nil) // want "query string uses concatenation"
+
+// Good - Transaction query with bind variables
+trx.Query(ctx, "FOR u IN users FILTER u.name == @name RETURN u", &arangodb.QueryOptions{
+    BindVars: map[string]interface{}{
+        "name": userName,
+    },
+})
 ```
 
-Covered methods:
-- `Database.Query()`
-- `Database.QueryBatch()`
-- `Database.ValidateQuery()`
-- `Database.ExplainQuery()`
+Covered methods on `Database` and `Transaction`:
+- `Query()`
+- `QueryBatch()`
+- `ValidateQuery()`
+- `ExplainQuery()`
 
 Notes and limitations:
 - Intra-procedural only: the analyzer does not follow values across function/method boundaries.

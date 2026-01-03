@@ -38,7 +38,7 @@ Identifies calls to `arangodb.Database.BeginTransaction()` and checks the third 
 
 **2. AQL Query Injection Detection**
 
-Identifies calls to query methods (`Query`, `QueryBatch`, `ValidateQuery`, `ExplainQuery`) and analyzes the query string parameter:
+Identifies calls to query methods (`Query`, `QueryBatch`, `ValidateQuery`, `ExplainQuery`) on both `Database` and `Transaction` types and analyzes the query string parameter:
 
 1. Direct string concatenation: `"FOR u IN users FILTER u.name == '" + userName + "' RETURN u"`
 2. `fmt.Sprintf` calls: `fmt.Sprintf("FOR u IN users FILTER u.name == '%s' RETURN u", userName)`
@@ -64,7 +64,8 @@ Tracks assignments to array/slice elements (e.g., `arr[i].AllowImplicit = true`)
 Tests use `analysistest.Run()` with golden test files:
 - `pkg/analyzer/testdata/src/common/` — Standard tests covering various patterns
   - Transaction `AllowImplicit` detection tests
-  - Query injection detection tests (see `query_injection.go`)
+  - Database query injection detection tests (see `query_injection.go`)
+  - Transaction query injection detection tests (see `transaction_query_injection.go`)
 - `pkg/analyzer/testdata/src/cgo/` — CGO-specific test cases
 - Each test file includes `// want "..."` comments marking expected diagnostics
 - Test data includes vendored copies of ArangoDB driver v2 for self-contained testing
@@ -135,7 +136,11 @@ The analyzer uses `inspector.WithStack()` to traverse call expressions with thei
 
 Key functions for query injection analysis:
 
-- `identifyQueryMethod()`: Identifies calls to query methods (`Query`, `QueryBatch`, `ValidateQuery`, `ExplainQuery`) and returns the query argument index
+- `identifyQueryMethod()`: Identifies calls to query methods (`Query`, `QueryBatch`, `ValidateQuery`, `ExplainQuery`) on both `Database` and `Transaction` types and returns the query argument index
+- `getQueryArgIndex()`: Maps method names to their query argument index
+- `isQueryReceiverType()`: Checks if a type is `Database` or `Transaction` using type resolution
+- `getArangoDBTypes()`: Retrieves `Database` and `Transaction` types from the arangodb package
+- `lookupType()`: Helper to lookup types by name in a package scope
 - `isConcatenatedString()`: Recursively checks if a binary expression uses `+` with at least one non-literal operand
 - `isAllStringLiterals()`: Distinguishes safe static concatenation from unsafe variable interpolation
 - `isFmtSprintfCall()`: Detects `fmt.Sprintf` calls by checking package origin
