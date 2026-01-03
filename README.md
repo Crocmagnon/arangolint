@@ -41,3 +41,67 @@ Notes and limitations:
 - What is detected: AllowImplicit set either in a composite literal initialization (e.g., &arangodb.BeginTransactionOptions{AllowImplicit: true}) or via an explicit assignment before the call (e.g., opts.AllowImplicit = ...).
 - Conservative by design: when the options value comes from an unknown factory/helper call, arangolint assumes AllowImplicit may be set to avoid false positives.
 - Out of scope (for now): inter-procedural tracking, deep control-flow analysis, and inference through complex aliasing beyond simple identifiers and selectors.
+
+### Detect AQL query injection vulnerabilities
+
+Why? Because building AQL queries using string concatenation or `fmt.Sprintf` with user-supplied values can lead to AQL injection attacks, similar to SQL injection vulnerabilities.
+
+Why should you use bind variables? Because [bind variables](https://docs.arangodb.com/3.11/aql/how-to-invoke-aql/with-arangosh/#bind-parameters) are automatically escaped and sanitized by ArangoDB, preventing injection attacks.
+
+```go
+ctx := context.Background()
+db, _ := arangoClient.GetDatabase(ctx, "name", nil)
+userName := "admin"
+userAge := 25
+
+// Bad - String concatenation with variables
+db.Query(ctx, "FOR u IN users FILTER u.name == '"+userName+"' RETURN u", nil) // want "query string uses concatenation"
+
+// Bad - Building query with multiple concatenations
+query := "FOR u IN users FILTER u.name == '" + userName + "' RETURN u"
+db.Query(ctx, query, nil) // want "query string uses concatenation"
+
+// Bad - Using fmt.Sprintf
+sprintfQuery := fmt.Sprintf("FOR u IN users FILTER u.name == '%s' RETURN u", userName)
+db.Query(ctx, sprintfQuery, nil) // want "query string uses concatenation"
+
+// Bad - Compound assignment +=
+q := "FOR u IN users"
+q += " FILTER u.name == '" + userName + "'"
+db.Query(ctx, q, nil) // want "query string uses concatenation"
+
+// Good - Using bind variables
+db.Query(ctx, "FOR u IN users FILTER u.name == @name RETURN u", &arangodb.QueryOptions{
+    BindVars: map[string]interface{}{
+        "name": userName,
+    },
+})
+
+// Good - Multiple bind variables
+db.Query(ctx, "FOR u IN users FILTER u.name == @name AND u.age == @age RETURN u", &arangodb.QueryOptions{
+    BindVars: map[string]interface{}{
+        "name": userName,
+        "age":  userAge,
+    },
+})
+
+// Good - Static query string (no variable interpolation)
+db.Query(ctx, "FOR u IN users RETURN u", nil)
+
+// Good - Static concatenation (only string literals)
+staticQuery := "FOR u IN users" + " FILTER u.age > 18" + " RETURN u"
+db.Query(ctx, staticQuery, nil)
+```
+
+Covered methods:
+- `Database.Query()`
+- `Database.QueryBatch()`
+- `Database.ValidateQuery()`
+- `Database.ExplainQuery()`
+
+Notes and limitations:
+- Intra-procedural only: the analyzer does not follow values across function/method boundaries.
+- Detects direct concatenation (`+` operator) and `fmt.Sprintf` calls in the same function.
+- Detects concatenation in variable assignments, declarations, and control-flow structures (if/else, for, range, switch).
+- Conservative by design: queries from helper functions or factory methods are not flagged to avoid false positives.
+- Static string concatenation (only literals, no variables) is considered safe and not flagged.
