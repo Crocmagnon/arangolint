@@ -1,2 +1,4 @@
+[env]
+CGO_ENABLED=1
 [tools]
 golangci-lint = "2.5.0"
