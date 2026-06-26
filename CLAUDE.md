@@ -78,14 +78,14 @@ go build ./...
 
 ### Run Tests
 ```bash
-mise run test
+mise run test   # runs: go test -race -v ./...
 # or directly (CGO_ENABLED=1 is required for the cgo test cases):
 CGO_ENABLED=1 go test ./...
 ```
 
 ### Run Linter
 ```bash
-mise run lint
+mise run lint   # runs: golangci-lint run --fix
 # or directly:
 CGO_ENABLED=1 golangci-lint run ./...
 ```
@@ -112,7 +112,7 @@ This tidies the main module and the two test data modules (`cgo` and `common`), 
 
 - **Module path**: `go.augendre.info/arangolint` (does not match the on-disk directory path)
 - **Go**: `1.25.0`; the only notable direct dependency is `golang.org/x/tools` (provides the `analysis` framework)
-- **`mise.toml`** pins `golangci-lint 2.5.0` and sets `CGO_ENABLED=1` for the dev environment
+- **`mise.toml`** pins `golangci-lint 2.12.2`, `goreleaser 2`, and `prek` (pre-commit runner), and sets `CGO_ENABLED=1` for the dev environment. It also defines a `release-snapshot` task (`goreleaser release --snapshot --clean`); releases are configured in `.goreleaser.yaml`
 - **`.pre-commit-config.yaml`** runs golangci-lint plus `go test` on commit
 - **`.golangci.yml`** (config v2, `fix: true`) enables nearly all linters except `depguard`, `exhaustruct`, `nonamedreturns`, and `wsl`; `cyclop` caps cyclomatic complexity at 15. Formatting is done by `goimports`/`gofmt`/`gofumpt`/`golines` with local prefix `go.augendre.info/arangolint`. Match this style to pass lint on the first try.
 

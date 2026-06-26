@@ -15,6 +15,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -50,7 +51,7 @@ func NewAnalyzer() *analysis.Analyzer {
 	}
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	inspctr, typeValid := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	if !typeValid {
 		return nil, errInvalidAnalysis
@@ -865,8 +866,9 @@ func hasAllowImplicitForIdent(
 // statements that occur before the call site.
 func ancestorBlocks(stack []ast.Node) []*ast.BlockStmt {
 	var blks []*ast.BlockStmt
-	for i := len(stack) - 1; i >= 0; i-- {
-		if blk, ok := stack[i].(*ast.BlockStmt); ok {
+
+	for _, v := range slices.Backward(stack) {
+		if blk, ok := v.(*ast.BlockStmt); ok {
 			blks = append(blks, blk)
 		}
 	}

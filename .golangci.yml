@@ -8,6 +8,7 @@ linters:
     - exhaustruct
     - nonamedreturns
     - wsl
+    - gomodguard
   settings:
     cyclop:
       max-complexity: 15
