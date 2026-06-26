@@ -62,11 +62,10 @@ Tracks assignments to array/slice elements (e.g., `arr[i].AllowImplicit = true`)
 ### Test Structure
 
 Tests use `analysistest.Run()` with golden test files:
-- `pkg/analyzer/testdata/src/common/` — Standard tests covering various patterns
-  - Transaction `AllowImplicit` detection tests
-  - Database query injection detection tests (see `query_injection.go`)
-  - Transaction query injection detection tests (see `transaction_query_injection.go`)
-- `pkg/analyzer/testdata/src/cgo/` — CGO-specific test cases
+- `pkg/analyzer/testdata/src/common/` — Standard tests covering various patterns, one file per pattern family. Examples:
+  - Query injection detection (`query_injection.go`, `transaction_query_injection.go`)
+  - Transaction `AllowImplicit` detection across control flow, shadowing, embeddings/wrappers, type aliases, etc. (`shadowing.go`, `embeddings_and_wrappers.go`, `for_loops.go`, `switch_cases.go`, …)
+- `pkg/analyzer/testdata/src/cgo/` — CGO-specific test cases (`cgo.go`)
 - Each test file includes `// want "..."` comments marking expected diagnostics
 - Test data includes vendored copies of ArangoDB driver v2 for self-contained testing
 
@@ -79,36 +78,43 @@ go build ./...
 
 ### Run Tests
 ```bash
-make test
-# or directly:
-go test ./...
+mise run test
+# or directly (CGO_ENABLED=1 is required for the cgo test cases):
+CGO_ENABLED=1 go test ./...
 ```
 
 ### Run Linter
 ```bash
-make lint
+mise run lint
 # or directly:
-golangci-lint run ./...
+CGO_ENABLED=1 golangci-lint run ./...
 ```
 
 ### Install golangci-lint
 ```bash
-make install-linter
-# or directly:
-./install-linter
+mise install
 ```
+`mise.toml` pins the `golangci-lint` version; `mise install` provisions it.
 
 ### Run Single Test
 ```bash
-go test ./pkg/analyzer -run TestAnalyzer/common
-go test ./pkg/analyzer -run TestAnalyzer/cgo
+CGO_ENABLED=1 go test ./pkg/analyzer -run TestAnalyzer/common
+CGO_ENABLED=1 go test ./pkg/analyzer -run TestAnalyzer/cgo
 ```
 
 ### Tidy Dependencies (including test data)
 ```bash
-make tidy
+mise run tidy
 ```
 This tidies the main module and the two test data modules (`cgo` and `common`), re-vendoring their dependencies.
+
+## Module & Toolchain
+
+- **Module path**: `go.augendre.info/arangolint` (does not match the on-disk directory path)
+- **Go**: `1.25.0`; the only notable direct dependency is `golang.org/x/tools` (provides the `analysis` framework)
+- **`mise.toml`** pins `golangci-lint 2.5.0` and sets `CGO_ENABLED=1` for the dev environment
+- **`.pre-commit-config.yaml`** runs golangci-lint plus `go test` on commit
+- **`.golangci.yml`** (config v2, `fix: true`) enables nearly all linters except `depguard`, `exhaustruct`, `nonamedreturns`, and `wsl`; `cyclop` caps cyclomatic complexity at 15. Formatting is done by `goimports`/`gofmt`/`gofumpt`/`golines` with local prefix `go.augendre.info/arangolint`. Match this style to pass lint on the first try.
 
 ## Development Notes
 

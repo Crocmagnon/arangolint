@@ -1,4 +1,23 @@
 [env]
 CGO_ENABLED=1
+
 [tools]
 golangci-lint = "2.5.0"
+goreleaser = "2"
+prek = "latest"
+
+[tasks.tidy]
+run = [
+  "go mod tidy",
+  "cd pkg/analyzer/testdata/src/cgo && go mod tidy && go mod vendor",
+  "cd pkg/analyzer/testdata/src/common && go mod tidy && go mod vendor",
+]
+
+[tasks.test]
+run = "go test -race -v ./..."
+
+[tasks.lint]
+run = "golangci-lint run --fix"
+
+[tasks.release-snapshot]
+run = "goreleaser release --snapshot --clean"
